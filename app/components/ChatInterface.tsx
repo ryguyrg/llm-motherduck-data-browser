@@ -227,12 +227,20 @@ const EXAMPLE_PROMPTS = [
   'Analyze sales by region and show a map with details.',
 ];
 
+const MODEL_OPTIONS = [
+  { id: 'gemini', name: 'Gemini 3 Flash', model: 'google/gemini-3-flash-preview', appName: 'Mash', subtitle: 'Gemini-like' },
+  { id: 'opus', name: 'Claude Opus 4.5', model: 'anthropic/claude-opus-4.5', appName: 'Maude', subtitle: 'Claude-like' },
+];
+
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isToolRunning, setIsToolRunning] = useState<string | null>(null);
   const [includeMetadata, setIncludeMetadata] = useState(true);
+  const [selectedModel, setSelectedModel] = useState(MODEL_OPTIONS[0].id); // Default to Gemini
+
+  const currentModelConfig = MODEL_OPTIONS.find(m => m.id === selectedModel) || MODEL_OPTIONS[0];
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -340,6 +348,7 @@ export default function ChatInterface() {
           messages: messagesToApiFormat(newMessages),
           isMobile,
           includeMetadata,
+          model: currentModelConfig.model,
         }),
         signal: abortControllerRef.current.signal,
       });
@@ -641,7 +650,7 @@ export default function ChatInterface() {
       setIsToolRunning(null);
       abortControllerRef.current = null;
     }
-  }, [inputValue, isLoading, messages]);
+  }, [inputValue, isLoading, messages, includeMetadata, currentModelConfig]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -666,13 +675,17 @@ export default function ChatInterface() {
     sendMessage(example);
   };
 
+  const themeClass = selectedModel === 'gemini' ? 'theme-gemini' : '';
+
   return (
-    <div className="chat-container">
+    <div className={`chat-container ${themeClass}`}>
       <header className="chat-header">
         <div className="chat-header-left">
-                    <div>
-            <div className="chat-title">Maude</div>
-            <div className="chat-subtitle">Ask questions of business data in MotherDuck using a Claude-like interface.</div>
+          <div>
+            <div className="chat-title">
+              <span key={selectedModel} className="chat-title-animated">{currentModelConfig.appName}</span>
+            </div>
+            <div className="chat-subtitle">Ask questions of business data in MotherDuck using a {currentModelConfig.subtitle} interface.</div>
           </div>
         </div>
         {messages.length > 0 && (
@@ -685,8 +698,8 @@ export default function ChatInterface() {
       <div className="chat-messages" ref={messagesContainerRef}>
         {messages.length === 0 ? (
           <div className="chat-welcome">
-                        <h2><span className="welcome-full">Welcome to Maude</span><span className="welcome-short">Welcome</span></h2>
-            <p>We've hooked up this interface to Claude and MotherDuck using the MotherDuck MCP Server. You have access to business data for a fictitious business, Eastlake, which manufactures and sells products to businesses. Start asking it some questions.</p>
+                        <h2><span className="welcome-full">Welcome to {currentModelConfig.appName}</span><span className="welcome-short">Welcome</span></h2>
+            <p>We've hooked up this interface to MotherDuck using the MotherDuck MCP Server. You have access to business data for a fictitious business, Eastlake, which manufactures and sells products to businesses. Start asking it some questions.</p>
             <div className="chat-examples">
               {EXAMPLE_PROMPTS.map((example, idx) => (
                 <button
@@ -707,6 +720,20 @@ export default function ChatInterface() {
               <span className="toggle-slider"></span>
               <span className="toggle-label">Include metadata in prompt</span>
             </label>
+            <div className="model-selector">
+              <label className="model-selector-label">Model:</label>
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="model-dropdown"
+              >
+                {MODEL_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         ) : (
           messages.map((msg, idx) => {

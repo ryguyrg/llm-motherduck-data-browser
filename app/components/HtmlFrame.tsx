@@ -29,10 +29,17 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title }: StreamingH
   const stripCodeBlockMarkers = useCallback((text: string) => {
     // Remove opening ```html marker
     let cleaned = text.replace(/^[\s\S]*?```html\s*/, '');
-    // Remove closing ``` if present (only at end)
+    // Remove closing ``` - can appear at end or before </body></html>
     if (isComplete) {
       cleaned = cleaned.replace(/\n```\s*$/, '');
+      // Debug: log the last 100 chars to see the ending
+      console.log('[StreamingHtml] Last 100 chars:', JSON.stringify(cleaned.slice(-100)));
     }
+    // Also remove ``` that appears before closing tags (Gemini sometimes outputs this way)
+    cleaned = cleaned.replace(/```\s*(<\/body>)/gi, '$1');
+    cleaned = cleaned.replace(/```\s*(<\/html>)/gi, '$1');
+    // Also try removing standalone ``` near the end
+    cleaned = cleaned.replace(/```\s*$/g, '');
     return cleaned;
   }, [isComplete]);
 

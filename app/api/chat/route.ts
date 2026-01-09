@@ -5,9 +5,14 @@ import type { MessageParam, ToolResultBlockParam, ContentBlock, Tool } from '@an
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
+// Use OpenRouter API with Anthropic SDK
 const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
+  apiKey: process.env.OPENROUTER_API_KEY,
+  baseURL: 'https://openrouter.ai/api',
 });
+
+// Default model - Gemini 3 Flash Preview via OpenRouter
+const DEFAULT_MODEL = 'google/gemini-3-flash-preview';
 
 // Custom tool for chart generation
 const chartTool: Tool = {
@@ -98,6 +103,7 @@ interface ChatRequest {
   messages: ChatMessage[];
   isMobile?: boolean;
   includeMetadata?: boolean;
+  model?: string;
 }
 
 // Allowed databases - restrict access to only these
@@ -322,12 +328,12 @@ function convertToAnthropicMessages(messages: ChatMessage[]): MessageParam[] {
 }
 
 export async function POST(request: NextRequest) {
-  console.log('[Chat API] Request started');
-
   try {
     const body: ChatRequest = await request.json();
-    const { messages, isMobile = false, includeMetadata = true } = body;
+    const { messages, isMobile = false, includeMetadata = true, model } = body;
 
+    const selectedModel = model || DEFAULT_MODEL;
+    console.log('[Chat API] Request started via OpenRouter, model:', selectedModel);
     console.log('[Chat API] includeMetadata:', includeMetadata);
 
     if (!messages || messages.length === 0) {
@@ -401,7 +407,7 @@ export async function POST(request: NextRequest) {
             }
 
             const response = await anthropic.messages.create({
-              model: 'claude-sonnet-4-20250514',
+              model: selectedModel,
               max_tokens: 16384,
               system: getSystemPrompt(isMobile, metadata),
               tools: tools,
@@ -470,63 +476,74 @@ export async function POST(request: NextRequest) {
               console.log(`[Chat API] ... (${fullResponseText.split('\n').length - 50} more lines)`);
             }
 
-            // If there were tool uses, execute them and continue
+            // If there were tool uses, execute them in parallel
             if (hasToolUse) {
-              const toolResults: ToolResultBlockParam[] = [];
+              const toolUseBlocks = assistantContentBlocks.filter(block => block.type === 'tool_use');
 
-              for (const block of assistantContentBlocks) {
+              // Send all tool_start events
+              for (const block of toolUseBlocks) {
                 if (block.type === 'tool_use') {
                   controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_start', tool: block.name })}\n\n`));
+                }
+              }
 
-                  try {
-                    if (block.name === 'generate_chart') {
-                      const chartSpec = block.input as Record<string, unknown>;
-                      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chart', spec: chartSpec })}\n\n`));
-                      toolResults.push({
-                        type: 'tool_result',
-                        tool_use_id: block.id,
-                        content: 'Chart generated and displayed to user.',
-                      });
-                    } else if (block.name === 'generate_map') {
-                      const mapSpec = block.input as Record<string, unknown>;
-                      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'map', spec: mapSpec })}\n\n`));
-                      toolResults.push({
-                        type: 'tool_result',
-                        tool_use_id: block.id,
-                        content: 'Map generated and displayed to user.',
-                      });
-                    } else {
-                      // Validate database access before executing tool
-                      const validation = validateToolAccess(block.name, block.input as Record<string, unknown>);
-                      if (!validation.allowed) {
-                        toolResults.push({
-                          type: 'tool_result',
-                          tool_use_id: block.id,
-                          content: validation.message || 'Access denied',
-                          is_error: true,
-                        });
-                        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_end', tool: block.name })}\n\n`));
-                        continue;
-                      }
+              // Execute all tools in parallel
+              const toolResultPromises = toolUseBlocks.map(async (block) => {
+                if (block.type !== 'tool_use') return null;
 
-                      const toolResult = await executeTool(mcpClient!, block.name, block.input as Record<string, unknown>);
-                      toolResults.push({
-                        type: 'tool_result',
-                        tool_use_id: block.id,
-                        content: toolResult,
-                      });
-                    }
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_end', tool: block.name })}\n\n`));
-                  } catch (error) {
-                    console.error(`[Chat API] Tool execution error:`, error);
-                    toolResults.push({
-                      type: 'tool_result',
+                try {
+                  if (block.name === 'generate_chart') {
+                    const chartSpec = block.input as Record<string, unknown>;
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chart', spec: chartSpec })}\n\n`));
+                    return {
+                      type: 'tool_result' as const,
                       tool_use_id: block.id,
-                      content: `Error executing tool: ${error instanceof Error ? error.message : 'Unknown error'}`,
-                      is_error: true,
-                    });
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_end', tool: block.name })}\n\n`));
+                      content: 'Chart generated and displayed to user.',
+                    };
+                  } else if (block.name === 'generate_map') {
+                    const mapSpec = block.input as Record<string, unknown>;
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'map', spec: mapSpec })}\n\n`));
+                    return {
+                      type: 'tool_result' as const,
+                      tool_use_id: block.id,
+                      content: 'Map generated and displayed to user.',
+                    };
+                  } else {
+                    // Validate database access before executing tool
+                    const validation = validateToolAccess(block.name, block.input as Record<string, unknown>);
+                    if (!validation.allowed) {
+                      return {
+                        type: 'tool_result' as const,
+                        tool_use_id: block.id,
+                        content: validation.message || 'Access denied',
+                        is_error: true,
+                      };
+                    }
+
+                    const toolResult = await executeTool(mcpClient!, block.name, block.input as Record<string, unknown>);
+                    return {
+                      type: 'tool_result' as const,
+                      tool_use_id: block.id,
+                      content: toolResult,
+                    };
                   }
+                } catch (error) {
+                  console.error(`[Chat API] Tool execution error:`, error);
+                  return {
+                    type: 'tool_result' as const,
+                    tool_use_id: block.id,
+                    content: `Error executing tool: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                    is_error: true,
+                  };
+                }
+              });
+
+              const toolResults = (await Promise.all(toolResultPromises)).filter((r): r is ToolResultBlockParam => r !== null);
+
+              // Send all tool_end events
+              for (const block of toolUseBlocks) {
+                if (block.type === 'tool_use') {
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_end', tool: block.name })}\n\n`));
                 }
               }
 
