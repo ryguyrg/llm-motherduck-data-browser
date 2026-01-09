@@ -106,7 +106,10 @@ const getSystemPrompt = (isMobile: boolean) => `You are a helpful data assistant
 
 ${isMobile ? `**MOBILE LAYOUT**: The user is on a mobile device. Generate reports with a single-column layout optimized for narrow screens (max-width: 400px). Use stacked sections instead of grids, larger touch-friendly text, and avoid wide tables. Keep visualizations simple and vertically oriented.
 
-` : ''}**IMPORTANT**: Before outputting HTML, ALWAYS first output a single line like "Generating [Report Title]..." where [Report Title] is a descriptive name for the analysis (e.g., "Generating Customer Product Variety Analysis..."). This lets the user know what's being created while the HTML renders.
+` : ''}**IMPORTANT**: As you work, briefly describe what you're doing at each step so the user can follow along:
+1. Before each query, briefly state what you're looking for (e.g., "Checking the customers table..." or "Looking up product sales data...")
+2. After gathering data, output a single line like "Generating [Report Title]..." before the HTML (e.g., "Generating Customer Product Variety Analysis...")
+This helps the user understand your process while queries run and the HTML renders.
 
 IMPORTANT: You only have access to the following databases: ${ALLOWED_DATABASES.join(', ')}
 Do not attempt to query or access any other databases.

@@ -1,10 +1,147 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 
 interface HtmlFrameProps {
   html: string;
   title?: string;
+}
+
+// Streaming HTML Frame - renders HTML progressively as chunks arrive
+interface StreamingHtmlFrameProps {
+  htmlChunks: string;
+  isComplete: boolean;
+  title?: string;
+}
+
+export function StreamingHtmlFrame({ htmlChunks, isComplete, title }: StreamingHtmlFrameProps) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [height, setHeight] = useState(450);
+  const [isVisible, setIsVisible] = useState(false);
+  const writtenLength = useRef(0);
+  const docOpened = useRef(false);
+
+  // Minimum content length before showing iframe (approximates ~100px of content)
+  // This accounts for HTML tags, so we look for content after <body>
+  const MIN_BODY_CONTENT_LENGTH = 200;
+
+  // Strip markdown code block markers from HTML
+  const stripCodeBlockMarkers = useCallback((text: string) => {
+    // Remove opening ```html marker
+    let cleaned = text.replace(/^[\s\S]*?```html\s*/, '');
+    // Remove closing ``` if present (only at end)
+    if (isComplete) {
+      cleaned = cleaned.replace(/\n```\s*$/, '');
+    }
+    return cleaned;
+  }, [isComplete]);
+
+  // Check if we have enough content to show the iframe
+  const checkVisibility = useCallback((html: string) => {
+    if (isVisible) return; // Already visible
+
+    // Look for content after <body> tag
+    const bodyMatch = html.toLowerCase().indexOf('<body');
+    if (bodyMatch !== -1) {
+      const afterBody = html.slice(bodyMatch);
+      const bodyTagEnd = afterBody.indexOf('>');
+      if (bodyTagEnd !== -1) {
+        const bodyContent = afterBody.slice(bodyTagEnd + 1);
+        // Check if we have enough content in the body
+        if (bodyContent.length >= MIN_BODY_CONTENT_LENGTH) {
+          setIsVisible(true);
+        }
+      }
+    }
+  }, [isVisible]);
+
+  // Update height based on content
+  const updateHeight = useCallback(() => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    try {
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (doc?.body) {
+        const contentHeight = doc.body.scrollHeight;
+        if (contentHeight > 0) {
+          setHeight(Math.min(contentHeight + 50, 4800));
+        }
+      }
+    } catch {
+      // Cross-origin access might fail, ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc) return;
+
+    const cleanedHtml = stripCodeBlockMarkers(htmlChunks);
+
+    // Check if we should show the iframe based on content length
+    checkVisibility(cleanedHtml);
+
+    // Open document on first chunk
+    if (!docOpened.current && cleanedHtml.length > 0) {
+      doc.open();
+      docOpened.current = true;
+      writtenLength.current = 0;
+    }
+
+    // Write new content
+    if (docOpened.current && cleanedHtml.length > writtenLength.current) {
+      const newContent = cleanedHtml.slice(writtenLength.current);
+      doc.write(newContent);
+      writtenLength.current = cleanedHtml.length;
+
+      // Update height periodically
+      updateHeight();
+    }
+
+    // Close document when complete
+    if (isComplete && docOpened.current) {
+      doc.close();
+      // Final height updates
+      setTimeout(updateHeight, 100);
+      setTimeout(updateHeight, 500);
+    }
+  }, [htmlChunks, isComplete, stripCodeBlockMarkers, updateHeight, checkVisibility]);
+
+  // Reset when component remounts
+  useEffect(() => {
+    return () => {
+      writtenLength.current = 0;
+      docOpened.current = false;
+    };
+  }, []);
+
+  // Always show when complete (in case content is small)
+  useEffect(() => {
+    if (isComplete) {
+      setIsVisible(true);
+    }
+  }, [isComplete]);
+
+  return (
+    <div className="html-frame" style={{ display: isVisible ? 'block' : 'none' }}>
+      {title && <div className="html-frame-title">{title}</div>}
+      <iframe
+        ref={iframeRef}
+        style={{
+          width: '100%',
+          height: `${height}px`,
+          border: 'none',
+          display: 'block',
+          background: '#fff',
+        }}
+        sandbox="allow-scripts allow-same-origin"
+        title={title || 'HTML Content'}
+      />
+    </div>
+  );
 }
 
 export default function HtmlFrame({ html, title }: HtmlFrameProps) {

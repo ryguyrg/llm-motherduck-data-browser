@@ -5,10 +5,58 @@ import ReactMarkdown, { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Sparkline, { parseSparklineData } from './Sparkline';
 import ChatChart, { ChartSpec } from './ChatChart';
-import HtmlFrame, { isHtmlContent, extractHtmlParts } from './HtmlFrame';
+import HtmlFrame, { StreamingHtmlFrame, isHtmlContent, extractHtmlParts } from './HtmlFrame';
 
 // Debug flag for HTML detection logging
 const DEBUG_HTML_DETECTION = false;
+const DEBUG_TOOL_TEXT = false;
+
+// Detect if streaming text contains the start of HTML content with actual renderable content
+function detectHtmlStart(text: string): { hasHtml: boolean; htmlStart: number; beforeText: string } {
+  const lowerText = text.toLowerCase();
+
+  // Check for ```html code block with actual content after it
+  const htmlCodeBlockStart = text.indexOf('```html');
+  if (htmlCodeBlockStart !== -1) {
+    // Find where the actual HTML content starts (after ```html and newline)
+    const contentStart = text.indexOf('\n', htmlCodeBlockStart);
+    if (contentStart !== -1) {
+      const afterMarker = text.slice(contentStart + 1);
+      // Wait until we have at least <!DOCTYPE or <html tag
+      if (afterMarker.toLowerCase().includes('<!doctype') || afterMarker.toLowerCase().includes('<html')) {
+        return {
+          hasHtml: true,
+          htmlStart: htmlCodeBlockStart,
+          beforeText: text.slice(0, htmlCodeBlockStart).trim()
+        };
+      }
+    }
+    // Not enough content yet
+    return { hasHtml: false, htmlStart: -1, beforeText: '' };
+  }
+
+  // Check for raw <!DOCTYPE html start
+  const doctypeStart = lowerText.indexOf('<!doctype html');
+  if (doctypeStart !== -1) {
+    return {
+      hasHtml: true,
+      htmlStart: doctypeStart,
+      beforeText: text.slice(0, doctypeStart).trim()
+    };
+  }
+
+  // Check for raw <html start
+  const htmlTagStart = lowerText.indexOf('<html');
+  if (htmlTagStart !== -1) {
+    return {
+      hasHtml: true,
+      htmlStart: htmlTagStart,
+      beforeText: text.slice(0, htmlTagStart).trim()
+    };
+  }
+
+  return { hasHtml: false, htmlStart: -1, beforeText: '' };
+}
 
 // Helper to remove HTML code blocks from text for display during streaming
 function filterHtmlFromText(text: string): string {
@@ -61,17 +109,23 @@ function MaxWidthContainer({ children, className }: { children: React.ReactNode;
 }
 
 // Collapsible tool use section component
-function ToolUseSection({ toolName, toolText, isActive }: { toolName: string; toolText: string; isActive?: boolean }) {
+function ToolUseSection({ toolName, toolText, isActive, isStreaming }: { toolName: string; toolText: string; isActive?: boolean; isStreaming?: boolean }) {
   const [isManuallyExpanded, setIsManuallyExpanded] = useState<boolean | null>(null);
   const wasActive = useRef(isActive);
+  const wasStreaming = useRef(isStreaming);
 
-  // Auto-collapse when transitioning from active to inactive
+  // Auto-collapse when transitioning from active to inactive, but only if not streaming
   useEffect(() => {
-    if (wasActive.current && !isActive) {
+    if (wasActive.current && !isActive && !isStreaming) {
+      setIsManuallyExpanded(false);
+    }
+    // Also collapse when streaming ends
+    if (wasStreaming.current && !isStreaming && !isActive) {
       setIsManuallyExpanded(false);
     }
     wasActive.current = isActive;
-  }, [isActive]);
+    wasStreaming.current = isStreaming;
+  }, [isActive, isStreaming]);
 
   const getToolDisplayName = (name: string) => {
     if (name === 'database_ops') return 'Queried database';
@@ -84,8 +138,8 @@ function ToolUseSection({ toolName, toolText, isActive }: { toolName: string; to
     return toolNames[name] || `Used ${name}`;
   };
 
-  // Show expanded if active, or if manually expanded (manual toggle overrides)
-  const showExpanded = isManuallyExpanded !== null ? isManuallyExpanded : isActive;
+  // Show expanded if active, streaming, or manually expanded (manual toggle overrides)
+  const showExpanded = isManuallyExpanded !== null ? isManuallyExpanded : (isActive || isStreaming);
 
   return (
     <div className={`tool-use-section ${isActive ? 'tool-use-active' : ''}`}>
@@ -150,11 +204,13 @@ const markdownComponents: Components = {
 };
 
 interface MessageContent {
-  type: 'text' | 'chart' | 'tool_use' | 'map' | 'html';
+  type: 'text' | 'chart' | 'tool_use' | 'map' | 'html' | 'streaming_html';
   text?: string;
   chart?: ChartSpec;
   map?: MapSpec;
   html?: string;
+  htmlChunks?: string;  // For streaming HTML
+  isComplete?: boolean; // For streaming HTML completion state
   toolName?: string;
   toolText?: string;
   isActive?: boolean;
@@ -230,7 +286,9 @@ export default function ChatInterface() {
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     if (!userHasScrolledUp.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      // Use auto (instant) scroll during loading to avoid conflicts with manual scrolling
+      // Use smooth scroll only when loading completes
+      messagesEndRef.current?.scrollIntoView({ behavior: isLoading ? 'auto' : 'smooth' });
     }
   }, [messages, isLoading]);
 
@@ -294,8 +352,10 @@ export default function ChatInterface() {
       const decoder = new TextDecoder();
       let currentContent: MessageContent[] = [];
       let currentText = '';
-      let pendingToolText = ''; // Text to move to tool_use when new text arrives
-      let pendingToolName = ''; // Track which tool the pending text is for
+      let pendingToolName = ''; // Track which tool just ran
+      let isStreamingHtml = false; // Track if we're in HTML streaming mode
+      let htmlStreamStart = -1; // Where HTML starts in the full text
+      let beforeHtmlText = ''; // Text before HTML started
 
       while (true) {
         const { done, value } = await reader.read();
@@ -311,19 +371,22 @@ export default function ChatInterface() {
 
               if (data.type === 'text') {
                 if (DEBUG_HTML_DETECTION) console.log('[Stream] text event, content length:', data.content.length, 'total currentText:', currentText.length + data.content.length);
-                // If there's pending text from before a tool call, move it to tool_use now
-                if (pendingToolText || pendingToolName) {
-                  const isDbTool = DATABASE_TOOLS.includes(pendingToolName);
-                  const existingDbOpsIndex = currentContent.findIndex(
-                    c => c.type === 'tool_use' && c.toolName === 'database_ops'
-                  );
 
-                  if (isDbTool) {
+                // If a tool just ran and we have NEW substantial content,
+                // move the OLD currentText to tool_use section
+                if (pendingToolName && data.content.trim()) {
+                  const isDbTool = DATABASE_TOOLS.includes(pendingToolName);
+
+                  if (isDbTool && currentText.trim()) {
+                    const existingDbOpsIndex = currentContent.findIndex(
+                      c => c.type === 'tool_use' && c.toolName === 'database_ops'
+                    );
+
                     if (existingDbOpsIndex >= 0) {
                       const existingBlock = currentContent[existingDbOpsIndex];
                       const newToolText = existingBlock.toolText
-                        ? existingBlock.toolText + (pendingToolText ? '\n\n' + pendingToolText : '')
-                        : pendingToolText;
+                        ? existingBlock.toolText + '\n\n' + currentText.trim()
+                        : currentText.trim();
                       currentContent = [
                         ...currentContent.slice(0, existingDbOpsIndex),
                         { ...existingBlock, toolText: newToolText, isActive: true },
@@ -332,107 +395,145 @@ export default function ChatInterface() {
                     } else {
                       currentContent = [
                         ...currentContent,
-                        { type: 'tool_use', toolName: 'database_ops', toolText: pendingToolText, isActive: true },
+                        { type: 'tool_use', toolName: 'database_ops', toolText: currentText.trim(), isActive: true },
                       ];
                     }
                   }
-                  pendingToolText = '';
+
+                  // Start fresh with new text
+                  currentText = data.content;
                   pendingToolName = '';
+                } else if (pendingToolName) {
+                  // Tool ran but new content is just whitespace - append but don't move yet
+                  currentText += data.content;
+                } else {
+                  // No tool ran, just append
+                  currentText += data.content;
                 }
 
-                currentText += data.content;
-                const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html');
-                setMessages(prev => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    role: 'assistant',
-                    content: [...preservedContent, { type: 'text', text: currentText }],
-                  };
-                  return updated;
-                });
+                // Detect if HTML is starting in the stream
+                if (!isStreamingHtml) {
+                  const htmlDetection = detectHtmlStart(currentText);
+                  if (htmlDetection.hasHtml) {
+                    isStreamingHtml = true;
+                    htmlStreamStart = htmlDetection.htmlStart;
+                    beforeHtmlText = htmlDetection.beforeText;
+                    if (DEBUG_HTML_DETECTION) console.log('[Stream] HTML detected at position:', htmlStreamStart, 'beforeText:', beforeHtmlText.slice(0, 100));
+                  }
+                }
+
+                const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html' || c.type === 'streaming_html');
+
+                if (isStreamingHtml) {
+                  // Show streaming HTML frame with the HTML portion
+                  const htmlChunks = currentText.slice(htmlStreamStart);
+                  const contentBlocks: MessageContent[] = [...preservedContent];
+                  if (beforeHtmlText) {
+                    contentBlocks.push({ type: 'text', text: beforeHtmlText });
+                  }
+                  contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: false });
+
+                  setMessages(prev => {
+                    const updated = [...prev];
+                    updated[updated.length - 1] = {
+                      role: 'assistant',
+                      content: contentBlocks,
+                    };
+                    return updated;
+                  });
+                } else {
+                  setMessages(prev => {
+                    const updated = [...prev];
+                    updated[updated.length - 1] = {
+                      role: 'assistant',
+                      content: [...preservedContent, { type: 'text', text: currentText }],
+                    };
+                    return updated;
+                  });
+                }
               } else if (data.type === 'done') {
                 if (DEBUG_HTML_DETECTION) console.log('[Stream] done event received');
-                // Move any remaining pending text to tool_use
-                if (pendingToolText || pendingToolName) {
-                  const isDbTool = DATABASE_TOOLS.includes(pendingToolName);
-                  if (isDbTool) {
-                    const existingDbOpsIndex = currentContent.findIndex(
-                      c => c.type === 'tool_use' && c.toolName === 'database_ops'
-                    );
-                    if (existingDbOpsIndex >= 0) {
-                      const existingBlock = currentContent[existingDbOpsIndex];
-                      const newToolText = existingBlock.toolText
-                        ? existingBlock.toolText + (pendingToolText ? '\n\n' + pendingToolText : '')
-                        : pendingToolText;
-                      currentContent = [
-                        ...currentContent.slice(0, existingDbOpsIndex),
-                        { ...existingBlock, toolText: newToolText, isActive: false },
-                        ...currentContent.slice(existingDbOpsIndex + 1),
-                      ];
-                    } else if (pendingToolText) {
-                      currentContent = [
-                        ...currentContent,
-                        { type: 'tool_use', toolName: 'database_ops', toolText: pendingToolText, isActive: false },
-                      ];
-                    }
-                  }
-                  pendingToolText = '';
-                  pendingToolName = '';
-                }
+
+                // Clear pending tool name
+                pendingToolName = '';
 
                 // Mark all active tool_use sections as inactive when stream ends
                 currentContent = currentContent.map(c =>
                   c.type === 'tool_use' && c.isActive ? { ...c, isActive: false } : c
                 );
 
-                // Check if the final text contains HTML content
+                // Handle final content - either streaming HTML completion or normal text
                 if (DEBUG_HTML_DETECTION) console.log('[Done] currentText length:', currentText.length);
                 if (DEBUG_HTML_DETECTION) console.log('[Done] currentContent types:', currentContent.map(c => c.type));
-                const finalBlocks: MessageContent[] = [];
-                if (currentText) {
-                  if (DEBUG_HTML_DETECTION) {
-                    console.log('[HTML Detection] Checking text (full):', currentText);
-                    console.log('[HTML Detection] Text includes ```html:', currentText.includes('```html'));
-                    console.log('[HTML Detection] Text includes <!DOCTYPE:', currentText.toLowerCase().includes('<!doctype'));
-                    console.log('[HTML Detection] isHtmlContent result:', isHtmlContent(currentText));
+                if (DEBUG_HTML_DETECTION) console.log('[Done] isStreamingHtml:', isStreamingHtml);
+
+                if (isStreamingHtml) {
+                  // We were streaming HTML - mark it as complete
+                  const htmlChunks = currentText.slice(htmlStreamStart);
+                  const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map');
+                  const contentBlocks: MessageContent[] = [...preservedContent];
+                  if (beforeHtmlText) {
+                    contentBlocks.push({ type: 'text', text: beforeHtmlText });
                   }
-                  if (isHtmlContent(currentText)) {
-                    const parts = extractHtmlParts(currentText);
+                  // Keep as streaming_html but mark complete - this triggers the iframe to close the document
+                  contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: true });
+
+                  setMessages(prev => {
+                    const updated = [...prev];
+                    updated[updated.length - 1] = {
+                      role: 'assistant',
+                      content: contentBlocks,
+                    };
+                    return updated;
+                  });
+                } else {
+                  // Normal text handling
+                  const finalBlocks: MessageContent[] = [];
+                  if (currentText) {
                     if (DEBUG_HTML_DETECTION) {
-                      console.log('[HTML Detection] extractHtmlParts result:', parts ? 'found' : 'null');
-                      if (parts) console.log('[HTML Detection] HTML length:', parts.html.length);
+                      console.log('[HTML Detection] Checking text (full):', currentText);
+                      console.log('[HTML Detection] Text includes ```html:', currentText.includes('```html'));
+                      console.log('[HTML Detection] Text includes <!DOCTYPE:', currentText.toLowerCase().includes('<!doctype'));
+                      console.log('[HTML Detection] isHtmlContent result:', isHtmlContent(currentText));
                     }
-                    if (parts) {
-                      if (parts.beforeText) {
-                        finalBlocks.push({ type: 'text', text: parts.beforeText });
+                    if (isHtmlContent(currentText)) {
+                      const parts = extractHtmlParts(currentText);
+                      if (DEBUG_HTML_DETECTION) {
+                        console.log('[HTML Detection] extractHtmlParts result:', parts ? 'found' : 'null');
+                        if (parts) console.log('[HTML Detection] HTML length:', parts.html.length);
                       }
-                      finalBlocks.push({ type: 'html', html: parts.html });
-                      if (parts.afterText) {
-                        finalBlocks.push({ type: 'text', text: parts.afterText });
+                      if (parts) {
+                        if (parts.beforeText) {
+                          finalBlocks.push({ type: 'text', text: parts.beforeText });
+                        }
+                        finalBlocks.push({ type: 'html', html: parts.html });
+                        if (parts.afterText) {
+                          finalBlocks.push({ type: 'text', text: parts.afterText });
+                        }
+                      } else {
+                        finalBlocks.push({ type: 'text', text: currentText });
                       }
                     } else {
                       finalBlocks.push({ type: 'text', text: currentText });
                     }
-                  } else {
-                    finalBlocks.push({ type: 'text', text: currentText });
                   }
-                }
 
-                const finalContent = finalBlocks.length > 0
-                  ? [...currentContent, ...finalBlocks]
-                  : currentContent;
-                setMessages(prev => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    role: 'assistant',
-                    content: finalContent,
-                  };
-                  return updated;
-                });
+                  const finalContent = finalBlocks.length > 0
+                    ? [...currentContent, ...finalBlocks]
+                    : currentContent;
+                  setMessages(prev => {
+                    const updated = [...prev];
+                    updated[updated.length - 1] = {
+                      role: 'assistant',
+                      content: finalContent,
+                    };
+                    return updated;
+                  });
+                }
               }
               else if (data.type === 'chart') {
                 currentContent = [
-                  ...currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html'),
+                  ...currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html' || c.type === 'streaming_html'),
                   { type: 'text', text: currentText },
                   { type: 'chart', chart: data.spec },
                 ];
@@ -447,7 +548,7 @@ export default function ChatInterface() {
                 });
               } else if (data.type === 'map') {
                 currentContent = [
-                  ...currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html'),
+                  ...currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html' || c.type === 'streaming_html'),
                   { type: 'text', text: currentText },
                   { type: 'map', map: data.spec },
                 ];
@@ -463,21 +564,34 @@ export default function ChatInterface() {
               } else if (data.type === 'tool_start') {
                 const isDbTool = DATABASE_TOOLS.includes(data.tool);
 
-                // Save current text as pending - it will be moved to tool_use when new text arrives
-                if (currentText.trim()) {
-                  // If there's already pending text, append to it
-                  pendingToolText = pendingToolText
-                    ? pendingToolText + '\n\n' + currentText.trim()
-                    : currentText.trim();
-                }
+                // Just mark that a tool is running - currentText stays visible
+                // It will be moved to tool_use when NEW text arrives
                 pendingToolName = data.tool;
-                // Don't clear currentText yet - keep showing it until new text arrives
 
-                // Just update the tool running state
+                // Update tool running state
                 setIsToolRunning(data.tool);
 
-                // Show loading indicator but keep current text visible
-                const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html');
+                // Create/update tool_use block (just for activity indicator)
+                if (isDbTool) {
+                  const existingDbOpsIndex = currentContent.findIndex(
+                    c => c.type === 'tool_use' && c.toolName === 'database_ops'
+                  );
+                  if (existingDbOpsIndex < 0) {
+                    currentContent = [
+                      ...currentContent,
+                      { type: 'tool_use', toolName: 'database_ops', toolText: '', isActive: true },
+                    ];
+                  } else {
+                    currentContent = [
+                      ...currentContent.slice(0, existingDbOpsIndex),
+                      { ...currentContent[existingDbOpsIndex], isActive: true },
+                      ...currentContent.slice(existingDbOpsIndex + 1),
+                    ];
+                  }
+                }
+
+                // Keep showing current text as regular text at the bottom
+                const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html' || c.type === 'streaming_html');
                 setMessages(prev => {
                   const updated = [...prev];
                   updated[updated.length - 1] = {
@@ -488,9 +602,6 @@ export default function ChatInterface() {
                   };
                   return updated;
                 });
-
-                // Now clear for tracking new text
-                currentText = '';
               } else if (data.type === 'tool_end') {
                 setIsToolRunning(null);
               } else if (data.type === 'error') {
@@ -596,6 +707,7 @@ export default function ChatInterface() {
                   (block.type === 'chart' && block.chart) ||
                   (block.type === 'map' && block.map) ||
                   (block.type === 'html' && block.html) ||
+                  (block.type === 'streaming_html' && block.htmlChunks) ||
                   (block.type === 'tool_use' && block.toolName && (block.toolText || block.isActive))
                 );
 
@@ -604,8 +716,16 @@ export default function ChatInterface() {
 
             const ContentWrapper = msg.role === 'assistant' ? MaxWidthContainer : 'div';
 
-            // Check if message contains HTML content
-            const hasHtml = typeof msg.content !== 'string' && msg.content.some(block => block.type === 'html' && block.html);
+            // Check if message contains HTML content (including streaming)
+            const hasHtml = typeof msg.content !== 'string' && msg.content.some(block =>
+              (block.type === 'html' && block.html) ||
+              (block.type === 'streaming_html' && block.htmlChunks)
+            );
+
+            // Check if message is currently streaming HTML (not yet complete)
+            const isStreamingHtml = typeof msg.content !== 'string' && msg.content.some(block =>
+              block.type === 'streaming_html' && block.htmlChunks && !block.isComplete
+            );
 
             return (
               <div key={idx} className={`chat-message chat-message-${msg.role}${hasHtml ? ' has-html' : ''}`}>
@@ -633,8 +753,11 @@ export default function ChatInterface() {
                       if (block.type === 'html' && block.html) {
                         return <HtmlFrame key={blockIdx} html={block.html} />;
                       }
+                      if (block.type === 'streaming_html' && block.htmlChunks) {
+                        return <StreamingHtmlFrame key={blockIdx} htmlChunks={block.htmlChunks} isComplete={block.isComplete || false} />;
+                      }
                       if (block.type === 'tool_use' && block.toolName && (block.toolText || block.isActive)) {
-                        return <ToolUseSection key={blockIdx} toolName={block.toolName} toolText={block.toolText || ''} isActive={block.isActive} />;
+                        return <ToolUseSection key={blockIdx} toolName={block.toolName} toolText={block.toolText || ''} isActive={block.isActive} isStreaming={isStreamingHtml} />;
                       }
                       return null;
                     })
