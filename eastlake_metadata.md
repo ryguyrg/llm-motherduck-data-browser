@@ -8,6 +8,8 @@ Eastlake is a fictitious B2B company that manufactures and sells products to bus
 
 **Important**: Don't assume all products are categorized or that similar INNER JOINs will always include all data. Some products may have NULL category_id values, and using INNER JOIN on categories will exclude these uncategorized products. Consider using LEFT JOIN when you need complete product listings.
 
+**Date Ranges**: If no date range is specified, always include orders up to the current date, defined by `today()` in DuckDB. Do not include orders after the current date.
+
 ## Database: `eastlake`
 
 ### Tables Overview
