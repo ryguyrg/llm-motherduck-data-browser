@@ -601,6 +601,9 @@ export default function ChatInterface() {
     localStorage.setItem('mcp_selected_model', model);
   }, []);
 
+  // Track when we're switching tabs to prevent auto-scroll interference
+  const isRestoringScroll = useRef(false);
+
   const saveActiveTab = useCallback((tab: string) => {
     // Save current scroll position before switching
     const container = messagesContainerRef.current;
@@ -611,13 +614,22 @@ export default function ChatInterface() {
     setActiveTab(tab);
     localStorage.setItem('mcp_active_tab', tab);
 
-    // Restore scroll position for the new tab (use setTimeout to allow DOM to update)
-    setTimeout(() => {
-      const newContainer = messagesContainerRef.current;
-      if (newContainer && tabScrollPositions.current[tab] !== undefined) {
-        newContainer.scrollTop = tabScrollPositions.current[tab];
-      }
-    }, 0);
+    // Mark that we're restoring scroll to prevent auto-scroll interference
+    isRestoringScroll.current = true;
+
+    // Restore scroll position for the new tab after React re-renders
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const newContainer = messagesContainerRef.current;
+        if (newContainer && tabScrollPositions.current[tab] !== undefined) {
+          newContainer.scrollTop = tabScrollPositions.current[tab];
+        }
+        // Allow auto-scroll again after a brief delay
+        setTimeout(() => {
+          isRestoringScroll.current = false;
+        }, 100);
+      });
+    });
   }, [activeTab]);
 
   const saveIncludeMetadata = useCallback((include: boolean) => {
@@ -638,6 +650,9 @@ export default function ChatInterface() {
   // This way if user scrolls up, they stay scrolled up
   const lastScrollHeight = useRef(0);
   useEffect(() => {
+    // Skip auto-scroll when restoring scroll position after tab switch
+    if (isRestoringScroll.current) return;
+
     const container = messagesContainerRef.current;
     if (!container) return;
 
