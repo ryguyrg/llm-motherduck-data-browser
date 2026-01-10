@@ -1160,6 +1160,15 @@ body:has(.theme-quacker) {
   max-width: 100%;
 }
 
+.head-to-head-panel .html-frame {
+  width: 100%;
+  max-width: 100%;
+}
+
+.head-to-head-panel .html-frame iframe {
+  width: 100%;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .chat-container {
