@@ -172,21 +172,33 @@ function filterSqlFromText(text: string): string {
 
 
 // Individual SQL statement collapsible component
-function SqlStatementSection({ sql, keyPrefix, defaultExpanded = false }: {
+function SqlStatementSection({ sql, keyPrefix, defaultExpanded = false, expansionState, onToggleExpansion }: {
   sql: string;
   keyPrefix: string;
   defaultExpanded?: boolean;
+  expansionState?: Record<string, boolean>;
+  onToggleExpansion?: (key: string) => void;
 }) {
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const [localExpanded, setLocalExpanded] = useState(defaultExpanded);
+
+  // Use external state if provided, otherwise fall back to local state
+  const expansionKey = `sql-${keyPrefix}`;
+  const isExpanded = expansionState ? (expansionState[expansionKey] ?? defaultExpanded) : localExpanded;
+
+  const handleToggle = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onToggleExpansion) {
+      onToggleExpansion(expansionKey);
+    } else {
+      setLocalExpanded(!localExpanded);
+    }
+  };
 
   return (
     <div className="sql-statement-section">
       <button
         className="sql-toggle"
-        onClick={(e) => {
-          e.stopPropagation();
-          setIsExpanded(!isExpanded);
-        }}
+        onClick={handleToggle}
       >
         <span className="sql-toggle-icon">{isExpanded ? '▼' : '▶'}</span>
         <span className="sql-toggle-label">SQL statement executed</span>
@@ -199,22 +211,37 @@ function SqlStatementSection({ sql, keyPrefix, defaultExpanded = false }: {
 }
 
 // Intermediate output section (for blended mode)
-function IntermediateOutputSection({ source, content }: {
+function IntermediateOutputSection({ source, content, expansionKey, expansionState, onToggleExpansion }: {
   source: string;
   content: string;
+  expansionKey?: string;
+  expansionState?: Record<string, boolean>;
+  onToggleExpansion?: (key: string) => void;
 }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [localExpanded, setLocalExpanded] = useState(false);
 
   const getLabel = (src: string) => {
     if (src === 'gemini') return 'Intermediate Output from Gemini';
     return `Intermediate Output from ${src}`;
   };
 
+  // Use external state if provided, otherwise fall back to local state
+  const stateKey = expansionKey || `intermediate-${source}`;
+  const isExpanded = expansionState ? (expansionState[stateKey] ?? false) : localExpanded;
+
+  const handleToggle = () => {
+    if (onToggleExpansion) {
+      onToggleExpansion(stateKey);
+    } else {
+      setLocalExpanded(!localExpanded);
+    }
+  };
+
   return (
     <div className="intermediate-output-section">
       <button
         className="intermediate-output-toggle"
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={handleToggle}
       >
         <span className="intermediate-output-icon">{isExpanded ? '▼' : '▶'}</span>
         <span className="intermediate-output-label">{getLabel(source)}</span>
@@ -229,32 +256,44 @@ function IntermediateOutputSection({ source, content }: {
 }
 
 // Collapsible tool use section component
-function ToolUseSection({ toolName, toolText, isActive, isStreaming, keyPrefix }: {
+function ToolUseSection({ toolName, toolText, isActive, isStreaming, keyPrefix, expansionState, onToggleExpansion }: {
   toolName: string;
   toolText: string;
   isActive?: boolean;
   isStreaming?: boolean;
   keyPrefix?: string;
+  expansionState?: Record<string, boolean>;
+  onToggleExpansion?: (key: string) => void;
 }) {
-  const [isManuallyExpanded, setIsManuallyExpanded] = useState<boolean | null>(null);
+  const [localManuallyExpanded, setLocalManuallyExpanded] = useState<boolean | null>(null);
   const wasActive = useRef(isActive);
   const wasStreaming = useRef(isStreaming);
 
   // Parse content into ordered segments (text and SQL interspersed)
   const segments = parseContentSegments(toolText);
 
+  const expansionKey = `tool-${keyPrefix || toolName}`;
+
   // Auto-collapse when transitioning from active to inactive, but only if not streaming
   useEffect(() => {
     if (wasActive.current && !isActive && !isStreaming) {
-      setIsManuallyExpanded(false);
+      if (onToggleExpansion && expansionState?.[expansionKey]) {
+        onToggleExpansion(expansionKey); // Collapse via external state
+      } else {
+        setLocalManuallyExpanded(false);
+      }
     }
     // Also collapse when streaming ends
     if (wasStreaming.current && !isStreaming && !isActive) {
-      setIsManuallyExpanded(false);
+      if (onToggleExpansion && expansionState?.[expansionKey]) {
+        onToggleExpansion(expansionKey); // Collapse via external state
+      } else {
+        setLocalManuallyExpanded(false);
+      }
     }
     wasActive.current = isActive;
     wasStreaming.current = isStreaming;
-  }, [isActive, isStreaming]);
+  }, [isActive, isStreaming, onToggleExpansion, expansionState, expansionKey]);
 
   const getToolDisplayName = (name: string) => {
     if (name === 'database_ops' || name === 'chain_of_thought') return 'Chain-of-thought';
@@ -270,15 +309,27 @@ function ToolUseSection({ toolName, toolText, isActive, isStreaming, keyPrefix }
   // Check if there's any content to show when expanded
   const hasContent = segments.length > 0;
 
+  // Determine manual expansion state from external or local source
+  const isManuallyExpanded = expansionState ? (expansionState[expansionKey] ?? null) : localManuallyExpanded;
+
   // Show expanded if active, streaming, or manually expanded (manual toggle overrides)
   // Only auto-expand if there's content to show
   const showExpanded = hasContent && (isManuallyExpanded !== null ? isManuallyExpanded : (isActive || isStreaming));
+
+  const handleToggle = () => {
+    if (!hasContent) return;
+    if (onToggleExpansion) {
+      onToggleExpansion(expansionKey);
+    } else {
+      setLocalManuallyExpanded(!showExpanded);
+    }
+  };
 
   return (
     <div className={`tool-use-section ${isActive ? 'tool-use-active' : ''}`}>
       <button
         className="tool-use-toggle"
-        onClick={() => hasContent && setIsManuallyExpanded(!showExpanded)}
+        onClick={handleToggle}
         style={{ cursor: hasContent ? 'pointer' : 'default' }}
       >
         <span className="tool-use-icon">{hasContent ? (showExpanded ? '▼' : '▶') : '•'}</span>
@@ -295,6 +346,8 @@ function ToolUseSection({ toolName, toolText, isActive, isStreaming, keyPrefix }
                 key={`${keyPrefix || 'seg'}-sql-${idx}`}
                 sql={segment.content}
                 keyPrefix={`${keyPrefix || 'seg'}-sql-${idx}`}
+                expansionState={expansionState}
+                onToggleExpansion={onToggleExpansion}
               />
             )
           ))}
@@ -456,6 +509,7 @@ export default function ChatInterface() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const tabScrollPositions = useRef<Record<string, number>>({});
+  const expansionStates = useRef<Record<string, boolean>>({});
   const inputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -569,6 +623,15 @@ export default function ChatInterface() {
   const saveIncludeMetadata = useCallback((include: boolean) => {
     setIncludeMetadata(include);
     localStorage.setItem('mcp_include_metadata', String(include));
+  }, []);
+
+  // Force re-render counter for expansion state changes
+  const [, forceExpansionUpdate] = useState(0);
+
+  // Toggle expansion state for collapsible sections (persists across tab switches)
+  const toggleExpansion = useCallback((key: string) => {
+    expansionStates.current[key] = !expansionStates.current[key];
+    forceExpansionUpdate(n => n + 1);
   }, []);
 
   // Auto-scroll during streaming, but only if already at/near bottom
@@ -1307,10 +1370,10 @@ export default function ChatInterface() {
                 return <StreamingHtmlFrame key={blockKey} htmlChunks={block.htmlChunks} isComplete={block.isComplete || false} />;
               }
               if (block.type === 'tool_use' && block.toolName) {
-                return <ToolUseSection key={blockKey} toolName={block.toolName} toolText={block.toolText || ''} isActive={block.isActive} isStreaming={isStreamingHtml} keyPrefix={blockKey} />;
+                return <ToolUseSection key={blockKey} toolName={block.toolName} toolText={block.toolText || ''} isActive={block.isActive} isStreaming={isStreamingHtml} keyPrefix={blockKey} expansionState={expansionStates.current} onToggleExpansion={toggleExpansion} />;
               }
               if (block.type === 'intermediate_output' && block.intermediateContent) {
-                return <IntermediateOutputSection key={blockKey} source={block.intermediateSource || 'unknown'} content={block.intermediateContent} />;
+                return <IntermediateOutputSection key={blockKey} source={block.intermediateSource || 'unknown'} content={block.intermediateContent} expansionKey={blockKey} expansionState={expansionStates.current} onToggleExpansion={toggleExpansion} />;
               }
               return null;
             })
