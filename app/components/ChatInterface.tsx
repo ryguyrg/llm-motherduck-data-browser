@@ -108,11 +108,140 @@ function MaxWidthContainer({ children, className }: { children: React.ReactNode;
   );
 }
 
+
+// Content segment type for interspersed text and SQL
+type ContentSegment = { type: 'text'; content: string } | { type: 'sql'; content: string };
+
+// Parse content into ordered segments of text and SQL
+function parseContentSegments(text: string): ContentSegment[] {
+  const segments: ContentSegment[] = [];
+
+  // Split by SQL code blocks, keeping the delimiters
+  // This regex captures: ```sql...``` blocks
+  const parts = text.split(/(```sql[\s\S]*?```|```(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|--)[^`]*```)/gi);
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+
+    // Check if this part is a SQL block
+    const sqlMatch = trimmed.match(/^```sql\s*([\s\S]*?)```$/i) ||
+                     trimmed.match(/^```((?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|--)[^`]*)```$/i);
+
+    if (sqlMatch) {
+      const sql = sqlMatch[1].trim();
+      if (sql) {
+        segments.push({ type: 'sql', content: sql });
+      }
+    } else {
+      // It's text content - clean up extra newlines
+      const textContent = trimmed.replace(/\n{3,}/g, '\n\n').trim();
+      if (textContent) {
+        segments.push({ type: 'text', content: textContent });
+      }
+    }
+  }
+
+  // Debug logging
+  if (segments.length > 0) {
+    console.log('[parseContentSegments] Input length:', text.length, 'Segments:', segments.map(s => `${s.type}(${s.content.length})`).join(', '));
+  }
+
+  return segments;
+}
+
+// Helper to extract SQL statements from text (kept for backward compatibility)
+function extractSqlStatements(text: string): { textWithoutSql: string; sqlStatements: string[] } {
+  const segments = parseContentSegments(text);
+  const sqlStatements = segments.filter(s => s.type === 'sql').map(s => s.content);
+  const textWithoutSql = segments.filter(s => s.type === 'text').map(s => s.content).join('\n\n');
+  return { textWithoutSql, sqlStatements };
+}
+
+// Filter SQL from text for display
+function filterSqlFromText(text: string): string {
+  const { textWithoutSql } = extractSqlStatements(text);
+
+  // Clean up excessive blank lines (more than 2 consecutive newlines -> 2)
+  let cleaned = textWithoutSql.replace(/\n{3,}/g, '\n\n');
+  // Remove leading/trailing whitespace
+  cleaned = cleaned.trim();
+
+  return cleaned;
+}
+
+
+// Individual SQL statement collapsible component
+function SqlStatementSection({ sql, keyPrefix, defaultExpanded = false }: {
+  sql: string;
+  keyPrefix: string;
+  defaultExpanded?: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+
+  return (
+    <div className="sql-statement-section">
+      <button
+        className="sql-toggle"
+        onClick={(e) => {
+          e.stopPropagation();
+          setIsExpanded(!isExpanded);
+        }}
+      >
+        <span className="sql-toggle-icon">{isExpanded ? '▼' : '▶'}</span>
+        <span className="sql-toggle-label">SQL statement executed</span>
+      </button>
+      {isExpanded && (
+        <pre key={keyPrefix} className="sql-code">{sql}</pre>
+      )}
+    </div>
+  );
+}
+
+// Intermediate output section (for blended mode)
+function IntermediateOutputSection({ source, content }: {
+  source: string;
+  content: string;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const getLabel = (src: string) => {
+    if (src === 'gemini') return 'Intermediate Output from Gemini';
+    return `Intermediate Output from ${src}`;
+  };
+
+  return (
+    <div className="intermediate-output-section">
+      <button
+        className="intermediate-output-toggle"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <span className="intermediate-output-icon">{isExpanded ? '▼' : '▶'}</span>
+        <span className="intermediate-output-label">{getLabel(source)}</span>
+      </button>
+      {isExpanded && (
+        <div className="intermediate-output-content">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Collapsible tool use section component
-function ToolUseSection({ toolName, toolText, isActive, isStreaming }: { toolName: string; toolText: string; isActive?: boolean; isStreaming?: boolean }) {
+function ToolUseSection({ toolName, toolText, isActive, isStreaming, keyPrefix }: {
+  toolName: string;
+  toolText: string;
+  isActive?: boolean;
+  isStreaming?: boolean;
+  keyPrefix?: string;
+}) {
   const [isManuallyExpanded, setIsManuallyExpanded] = useState<boolean | null>(null);
   const wasActive = useRef(isActive);
   const wasStreaming = useRef(isStreaming);
+
+  // Parse content into ordered segments (text and SQL interspersed)
+  const segments = parseContentSegments(toolText);
 
   // Auto-collapse when transitioning from active to inactive, but only if not streaming
   useEffect(() => {
@@ -128,32 +257,47 @@ function ToolUseSection({ toolName, toolText, isActive, isStreaming }: { toolNam
   }, [isActive, isStreaming]);
 
   const getToolDisplayName = (name: string) => {
-    if (name === 'database_ops') return 'Queried database';
+    if (name === 'database_ops' || name === 'chain_of_thought') return 'Chain-of-thought';
     const toolNames: Record<string, string> = {
-      'query': 'Queried database',
-      'list_tables': 'Listed tables',
-      'list_columns': 'Listed columns',
-      'search_catalog': 'Searched catalog',
+      'query': 'Chain-of-thought',
+      'list_tables': 'Chain-of-thought',
+      'list_columns': 'Chain-of-thought',
+      'search_catalog': 'Chain-of-thought',
     };
     return toolNames[name] || `Used ${name}`;
   };
 
+  // Check if there's any content to show when expanded
+  const hasContent = segments.length > 0;
+
   // Show expanded if active, streaming, or manually expanded (manual toggle overrides)
-  const showExpanded = isManuallyExpanded !== null ? isManuallyExpanded : (isActive || isStreaming);
+  // Only auto-expand if there's content to show
+  const showExpanded = hasContent && (isManuallyExpanded !== null ? isManuallyExpanded : (isActive || isStreaming));
 
   return (
     <div className={`tool-use-section ${isActive ? 'tool-use-active' : ''}`}>
       <button
         className="tool-use-toggle"
-        onClick={() => setIsManuallyExpanded(!showExpanded)}
+        onClick={() => hasContent && setIsManuallyExpanded(!showExpanded)}
+        style={{ cursor: hasContent ? 'pointer' : 'default' }}
       >
-        <span className="tool-use-icon">{showExpanded ? '▼' : '▶'}</span>
+        <span className="tool-use-icon">{hasContent ? (showExpanded ? '▼' : '▶') : '•'}</span>
         <span className="tool-use-label">{getToolDisplayName(toolName)}</span>
         {isActive && <span className="tool-use-spinner" />}
       </button>
-      {showExpanded && toolText && (
+      {showExpanded && (
         <div className="tool-use-content">
-          {toolText}
+          {segments.map((segment, idx) => (
+            segment.type === 'text' ? (
+              <div key={`${keyPrefix || 'seg'}-text-${idx}`} className="tool-use-text">{segment.content}</div>
+            ) : (
+              <SqlStatementSection
+                key={`${keyPrefix || 'seg'}-sql-${idx}`}
+                sql={segment.content}
+                keyPrefix={`${keyPrefix || 'seg'}-sql-${idx}`}
+              />
+            )
+          ))}
         </div>
       )}
     </div>
@@ -204,7 +348,7 @@ const markdownComponents: Components = {
 };
 
 interface MessageContent {
-  type: 'text' | 'chart' | 'tool_use' | 'map' | 'html' | 'streaming_html';
+  type: 'text' | 'chart' | 'tool_use' | 'map' | 'html' | 'streaming_html' | 'intermediate_output';
   text?: string;
   chart?: ChartSpec;
   map?: MapSpec;
@@ -214,12 +358,25 @@ interface MessageContent {
   toolName?: string;
   toolText?: string;
   isActive?: boolean;
+  intermediateSource?: string;  // For intermediate output (e.g., 'gemini')
+  intermediateContent?: string; // For intermediate output content
 }
 
 interface Message {
   role: 'user' | 'assistant';
   content: string | MessageContent[];
 }
+
+// Helper to filter visualization content (charts, maps, intermediate output)
+const getVisualizations = (content: MessageContent[]): MessageContent[] =>
+  content.filter(c => c.type === 'chart' || c.type === 'map' || c.type === 'intermediate_output');
+
+// Helper to filter visualization content plus HTML
+const getVisualizationsAndHtml = (content: MessageContent[]): MessageContent[] =>
+  content.filter(c =>
+    c.type === 'chart' || c.type === 'map' || c.type === 'intermediate_output' ||
+    c.type === 'html' || c.type === 'streaming_html'
+  );
 
 const EXAMPLE_PROMPTS = [
   'What products do we sell, and how have they performed?',
@@ -241,37 +398,80 @@ const HEAD_TO_HEAD_MODELS = [
   { id: 'blended', name: 'Blended', model: 'blended' },
 ];
 
+// Helper to convert messages to API format (pure function, outside component)
+const messagesToApiFormat = (msgs: Message[]) => {
+  return msgs.map(msg => ({
+    role: msg.role,
+    content: typeof msg.content === 'string'
+      ? msg.content
+      : msg.content
+          .map(c => {
+            // Extract text from text blocks
+            if (c.type === 'text' && c.text) return c.text;
+            // Extract text from chain_of_thought blocks (contains the actual response)
+            if (c.type === 'tool_use' && c.toolName === 'chain_of_thought' && c.toolText) {
+              return c.toolText;
+            }
+            // Extract HTML content (contains reports/visualizations with data)
+            if (c.type === 'html' && c.html) return c.html;
+            if (c.type === 'streaming_html' && c.htmlChunks) return c.htmlChunks;
+            return '';
+          })
+          .filter(Boolean)
+          .join('\n\n') || '[visualization response]',
+  })).filter(msg => msg.content);
+};
+
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isToolRunning, setIsToolRunning] = useState<string | null>(null);
   const [includeMetadata, setIncludeMetadata] = useState(true);
-  const [selectedModel, setSelectedModel] = useState(MODEL_OPTIONS[0].id); // Default to Gemini
+  const [selectedModel, setSelectedModel] = useState(MODEL_OPTIONS[0].id);
 
-  // Head-to-head mode state
-  const [headToHeadResponses, setHeadToHeadResponses] = useState<Record<string, MessageContent[]>>({});
+  // Head-to-head mode state - tracks full conversation per model
+  const [headToHeadMessages, setHeadToHeadMessages] = useState<Record<string, Message[]>>({});
   const [headToHeadLoading, setHeadToHeadLoading] = useState<Record<string, boolean>>({});
   const [headToHeadToolRunning, setHeadToHeadToolRunning] = useState<Record<string, string | null>>({});
   const [activeTab, setActiveTab] = useState(HEAD_TO_HEAD_MODELS[0].id);
   const headToHeadAbortControllers = useRef<Record<string, AbortController>>({});
+
+  // Message queue for submitting while a response is in progress (supports multiple queued messages)
+  const [messageQueue, setMessageQueue] = useState<string[]>([]);
+  // Ref to access queue synchronously (kept in sync via useEffect)
+  const messageQueueRef = useRef<string[]>([]);
+  // Flag to prevent processing multiple queue items simultaneously (standard mode)
+  const isProcessingQueueRef = useRef(false);
+  // Per-model queue processing for head-to-head mode
+  const headToHeadQueueIndexRef = useRef<Record<string, number>>({});
+  // Per-model processing flags to prevent double processing
+  const headToHeadProcessingRef = useRef<Record<string, boolean>>({});
+  // Ref to track latest headToHeadMessages for queue processing
+  const headToHeadMessagesRef = useRef<Record<string, Message[]>>({});
+  headToHeadMessagesRef.current = headToHeadMessages;
 
   const currentModelConfig = MODEL_OPTIONS.find(m => m.id === selectedModel) || MODEL_OPTIONS[0];
   const isHeadToHead = selectedModel === 'head-to-head';
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const userHasScrolledUp = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const storageKey = 'mcp_chat_history';
+  // Ref to track latest messages (avoids stale closure issues with queued messages)
+  const messagesRef = useRef<Message[]>(messages);
+  messagesRef.current = messages;
 
-  // Load messages from localStorage on mount
+  const storageKey = 'mcp_chat_history';
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  // Load all state from localStorage on mount (client-side only to avoid hydration mismatch)
   useEffect(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
+    // Load standard mode messages
+    const savedMessages = localStorage.getItem(storageKey);
+    if (savedMessages) {
       try {
-        const parsed = JSON.parse(saved);
+        const parsed = JSON.parse(savedMessages);
         if (Array.isArray(parsed)) {
           setMessages(parsed);
         }
@@ -279,62 +479,119 @@ export default function ChatInterface() {
         console.error('Failed to parse saved chat history:', e);
       }
     }
+
+    // Load selected model
+    const savedModel = localStorage.getItem('mcp_selected_model');
+    if (savedModel && MODEL_OPTIONS.some(m => m.id === savedModel)) {
+      setSelectedModel(savedModel);
+    }
+
+    // Load head-to-head messages
+    const savedH2H = localStorage.getItem('mcp_head_to_head_history');
+    if (savedH2H) {
+      try {
+        const parsed = JSON.parse(savedH2H);
+        if (typeof parsed === 'object' && parsed !== null) {
+          setHeadToHeadMessages(parsed);
+        }
+      } catch (e) {
+        console.error('Failed to parse saved head-to-head history:', e);
+      }
+    }
+
+    // Load active tab
+    const savedTab = localStorage.getItem('mcp_active_tab');
+    if (savedTab && HEAD_TO_HEAD_MODELS.some(m => m.id === savedTab)) {
+      setActiveTab(savedTab);
+    }
+
+    // Load metadata preference
+    const savedMetadata = localStorage.getItem('mcp_include_metadata');
+    if (savedMetadata !== null) {
+      setIncludeMetadata(savedMetadata === 'true');
+    }
+
+    // Mark as hydrated to show UI
+    setIsHydrated(true);
   }, []);
 
-  // Save messages to localStorage when they change
+  // Save messages to localStorage when they change (skip if empty to preserve loaded state)
+  const prevMessagesRef = useRef<string>('');
   useEffect(() => {
+    // Only save if we have messages and content has changed
     if (messages.length > 0) {
-      localStorage.setItem(storageKey, JSON.stringify(messages));
+      const serialized = JSON.stringify(messages);
+      if (serialized !== prevMessagesRef.current) {
+        localStorage.setItem(storageKey, serialized);
+        prevMessagesRef.current = serialized;
+      }
     }
   }, [messages]);
 
-  // Check if user is near the bottom of the chat
-  const isNearBottom = useCallback(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return true;
-    const threshold = 100;
-    return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+  // Save head-to-head messages to localStorage when they change
+  const prevH2HRef = useRef<string>('');
+  useEffect(() => {
+    const hasMessages = Object.values(headToHeadMessages).some(msgs => msgs.length > 0);
+    const serialized = JSON.stringify(headToHeadMessages);
+    // Only save if changed and has content
+    if (hasMessages && serialized !== prevH2HRef.current) {
+      localStorage.setItem('mcp_head_to_head_history', serialized);
+    }
+    prevH2HRef.current = serialized;
+  }, [headToHeadMessages]);
+
+  // Helper to save user preferences (called from onChange handlers)
+  const saveSelectedModel = useCallback((model: string) => {
+    setSelectedModel(model);
+    localStorage.setItem('mcp_selected_model', model);
   }, []);
 
-  // Handle scroll events to track if user scrolled up
+  const saveActiveTab = useCallback((tab: string) => {
+    setActiveTab(tab);
+    localStorage.setItem('mcp_active_tab', tab);
+  }, []);
+
+  const saveIncludeMetadata = useCallback((include: boolean) => {
+    setIncludeMetadata(include);
+    localStorage.setItem('mcp_include_metadata', String(include));
+  }, []);
+
+  // Auto-scroll during streaming, but only if already at/near bottom
+  // This way if user scrolls up, they stay scrolled up
+  const lastScrollHeight = useRef(0);
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
 
-    const handleScroll = () => {
-      userHasScrolledUp.current = !isNearBottom();
-    };
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    const wasAtBottom = distanceFromBottom < 150;
+    const contentGrew = container.scrollHeight > lastScrollHeight.current;
 
-    container.addEventListener('scroll', handleScroll);
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [isNearBottom]);
-
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
-    if (!userHasScrolledUp.current) {
-      // Use auto (instant) scroll during loading to avoid conflicts with manual scrolling
-      // Use smooth scroll only when loading completes
-      messagesEndRef.current?.scrollIntoView({ behavior: isLoading ? 'auto' : 'smooth' });
+    // Only auto-scroll if we were already at/near bottom
+    if (wasAtBottom && contentGrew) {
+      container.scrollTop = container.scrollHeight;
     }
-  }, [messages, isLoading]);
+
+    lastScrollHeight.current = container.scrollHeight;
+  }, [messages, headToHeadMessages]);
+
+  // Always scroll to bottom when user sends a NEW message
+  const prevMessageCount = useRef(0);
+  useEffect(() => {
+    const currentCount = messages.length + Object.values(headToHeadMessages).reduce((sum, msgs) => sum + msgs.length, 0);
+    if (currentCount > prevMessageCount.current) {
+      const container = messagesContainerRef.current;
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
+    prevMessageCount.current = currentCount;
+  }, [messages, headToHeadMessages]);
 
   // Focus input on mount
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
-
-  // Helper to convert messages to API format
-  const messagesToApiFormat = (msgs: Message[]) => {
-    return msgs.map(msg => ({
-      role: msg.role,
-      content: typeof msg.content === 'string'
-        ? msg.content
-        : msg.content
-            .filter(c => c.type === 'text' && c.text)
-            .map(c => c.text)
-            .join('') || '[visualization response]',
-    })).filter(msg => msg.content);
-  };
 
   // Helper function to run a single model stream (used in head-to-head mode)
   const runModelStream = useCallback(async (
@@ -371,6 +628,7 @@ export default function ChatInterface() {
       let currentContent: MessageContent[] = [];
       let currentText = '';
       let pendingToolName = '';
+      let pendingSql = ''; // SQL waiting to be committed after explanatory text
       let isStreamingHtml = false;
       let htmlStreamStart = -1;
       let beforeHtmlText = '';
@@ -388,28 +646,11 @@ export default function ChatInterface() {
               const data = JSON.parse(line.slice(6));
 
               if (data.type === 'text') {
+                // If we had a pending tool, clear it now that text is arriving
                 if (pendingToolName && data.content.trim()) {
-                  const isDbTool = DATABASE_TOOLS.includes(pendingToolName);
-                  if (isDbTool && currentText.trim()) {
-                    const existingDbOpsIndex = currentContent.findIndex(
-                      c => c.type === 'tool_use' && c.toolName === 'database_ops'
-                    );
-                    if (existingDbOpsIndex >= 0) {
-                      const existingBlock = currentContent[existingDbOpsIndex];
-                      currentContent = [
-                        ...currentContent.slice(0, existingDbOpsIndex),
-                        { ...existingBlock, toolText: (existingBlock.toolText || '') + '\n\n' + currentText.trim(), isActive: true },
-                        ...currentContent.slice(existingDbOpsIndex + 1),
-                      ];
-                    } else {
-                      currentContent = [...currentContent, { type: 'tool_use', toolName: 'database_ops', toolText: currentText.trim(), isActive: true }];
-                    }
-                  }
-                  currentText = data.content;
                   pendingToolName = '';
-                } else {
-                  currentText += data.content;
                 }
+                currentText += data.content;
 
                 if (!isStreamingHtml) {
                   const htmlDetection = detectHtmlStart(currentText);
@@ -420,25 +661,76 @@ export default function ChatInterface() {
                   }
                 }
 
-                const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html' || c.type === 'streaming_html');
+                // Get non-text content (charts, maps, html, intermediate_output)
+                const otherContent = getVisualizationsAndHtml(currentContent);
+
+                // Find or create chain_of_thought block
+                const cotIndex = currentContent.findIndex(c => c.type === 'tool_use' && c.toolName === 'chain_of_thought');
+                let cotBlock = cotIndex >= 0 ? currentContent[cotIndex] : null;
+
                 if (isStreamingHtml) {
                   const htmlChunks = currentText.slice(htmlStreamStart);
-                  const contentBlocks: MessageContent[] = [...preservedContent];
-                  if (beforeHtmlText) contentBlocks.push({ type: 'text', text: beforeHtmlText });
+                  const contentBlocks: MessageContent[] = [...otherContent];
+                  // Show beforeHtmlText in chain_of_thought block during streaming
+                  if (beforeHtmlText || (cotBlock?.toolText)) {
+                    const displayCotText = (cotBlock?.toolText || '') + beforeHtmlText;
+                    contentBlocks.unshift({
+                      type: 'tool_use',
+                      toolName: 'chain_of_thought',
+                      toolText: displayCotText,
+                      isActive: true
+                    });
+                  }
                   contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: false });
                   onUpdate(contentBlocks);
                 } else {
-                  onUpdate([...preservedContent, { type: 'text', text: currentText }]);
+                  // Display chain_of_thought block with committed content + current streaming text
+                  const committedText = cotBlock?.toolText || '';
+                  const displayCot: MessageContent = {
+                    type: 'tool_use',
+                    toolName: 'chain_of_thought',
+                    toolText: committedText + currentText,
+                    isActive: true
+                  };
+                  // Ensure cotBlock exists in currentContent for tracking
+                  if (cotIndex < 0 && currentText.trim()) {
+                    // Create cotBlock in currentContent (toolText stays empty - currentText is uncommitted)
+                    currentContent = [...currentContent, {
+                      type: 'tool_use',
+                      toolName: 'chain_of_thought',
+                      toolText: '',
+                      isActive: true
+                    }];
+                  } else if (cotIndex >= 0) {
+                    currentContent = [
+                      ...currentContent.slice(0, cotIndex),
+                      { ...currentContent[cotIndex], isActive: true },
+                      ...currentContent.slice(cotIndex + 1),
+                    ];
+                  }
+                  onUpdate([displayCot, ...otherContent]);
                 }
               } else if (data.type === 'done') {
+                console.log(`[${modelId}] done - currentContent:`, currentContent.map(c => c.type), 'currentText length:', currentText.length);
                 currentContent = currentContent.map(c =>
                   c.type === 'tool_use' && c.isActive ? { ...c, isActive: false } : c
                 );
                 if (isStreamingHtml) {
                   const htmlChunks = currentText.slice(htmlStreamStart);
-                  const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map');
-                  const contentBlocks: MessageContent[] = [...preservedContent];
-                  if (beforeHtmlText) contentBlocks.push({ type: 'text', text: beforeHtmlText });
+                  const otherContent = getVisualizations(currentContent);
+                  const cotBlock = currentContent.find(c => c.type === 'tool_use' && c.toolName === 'chain_of_thought');
+                  const contentBlocks: MessageContent[] = [];
+                  // Include beforeHtmlText in chain_of_thought block (not as separate text)
+                  if (beforeHtmlText || (cotBlock?.toolText)) {
+                    const finalCotText = (cotBlock?.toolText || '') + beforeHtmlText;
+                    contentBlocks.push({
+                      type: 'tool_use',
+                      toolName: 'chain_of_thought',
+                      toolText: finalCotText,
+                      isActive: false
+                    });
+                  }
+                  contentBlocks.push(...otherContent);
                   contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: true });
                   onUpdate(contentBlocks);
                 } else if (currentText) {
@@ -446,33 +738,83 @@ export default function ChatInterface() {
                     const parts = extractHtmlParts(currentText);
                     if (parts) {
                       const finalBlocks: MessageContent[] = [];
-                      if (parts.beforeText) finalBlocks.push({ type: 'text', text: parts.beforeText });
+                      const cotBlock = currentContent.find(c => c.type === 'tool_use' && c.toolName === 'chain_of_thought');
+                      // Include beforeText in chain_of_thought block
+                      if (parts.beforeText || (cotBlock?.toolText)) {
+                        const finalCotText = (cotBlock?.toolText || '') + parts.beforeText;
+                        finalBlocks.push({
+                          type: 'tool_use',
+                          toolName: 'chain_of_thought',
+                          toolText: finalCotText,
+                          isActive: false
+                        });
+                      }
+                      finalBlocks.push(...getVisualizations(currentContent));
                       finalBlocks.push({ type: 'html', html: parts.html });
                       if (parts.afterText) finalBlocks.push({ type: 'text', text: parts.afterText });
-                      onUpdate([...currentContent, ...finalBlocks]);
+                      onUpdate(finalBlocks);
                     } else {
-                      onUpdate([...currentContent, { type: 'text', text: currentText }]);
+                      const cotBlock = currentContent.find(c => c.type === 'tool_use' && c.toolName === 'chain_of_thought');
+                      const finalBlocks: MessageContent[] = [];
+                      if (cotBlock) finalBlocks.push({ ...cotBlock, toolText: (cotBlock.toolText || '') + currentText, isActive: false });
+                      else finalBlocks.push({ type: 'tool_use', toolName: 'chain_of_thought', toolText: currentText, isActive: false });
+                      finalBlocks.push(...getVisualizations(currentContent));
+                      onUpdate(finalBlocks);
                     }
                   } else {
-                    onUpdate([...currentContent, { type: 'text', text: currentText }]);
+                    // Final content: chain_of_thought with all text
+                    const cotBlock = currentContent.find(c => c.type === 'tool_use' && c.toolName === 'chain_of_thought');
+                    const finalBlocks: MessageContent[] = [];
+                    const finalText = (cotBlock?.toolText || '') + currentText;
+                    finalBlocks.push({ type: 'tool_use', toolName: 'chain_of_thought', toolText: finalText, isActive: false });
+                    finalBlocks.push(...getVisualizations(currentContent));
+                    console.log(`[${modelId}] finalBlocks:`, finalBlocks.map(b => ({ type: b.type, toolName: (b as any).toolName, textLen: (b as any).toolText?.length })));
+                    onUpdate(finalBlocks);
                   }
+                } else if (currentContent.length > 0) {
+                  // Ensure any tool_use blocks are sent even if no final text
+                  onUpdate(currentContent.map(c => c.type === 'tool_use' ? { ...c, isActive: false } : c));
                 }
                 onDone();
               } else if (data.type === 'tool_start') {
                 pendingToolName = data.tool;
                 onToolStart(data.tool);
                 const isDbTool = DATABASE_TOOLS.includes(data.tool);
-                if (isDbTool) {
-                  const existingDbOpsIndex = currentContent.findIndex(c => c.type === 'tool_use' && c.toolName === 'database_ops');
-                  if (existingDbOpsIndex < 0) {
-                    currentContent = [...currentContent, { type: 'tool_use', toolName: 'database_ops', toolText: '', isActive: true }];
-                  } else {
-                    currentContent = [
-                      ...currentContent.slice(0, existingDbOpsIndex),
-                      { ...currentContent[existingDbOpsIndex], isActive: true },
-                      ...currentContent.slice(existingDbOpsIndex + 1),
-                    ];
+                if (isDbTool && data.sql) {
+                  // Commit any pre-SQL text first, then add SQL
+                  const cotIndex = currentContent.findIndex(c => c.type === 'tool_use' && c.toolName === 'chain_of_thought');
+                  // Include any previous pending SQL, then current text, then new SQL
+                  let newToolText = '';
+                  if (pendingSql) {
+                    newToolText += `\`\`\`sql\n${pendingSql}\n\`\`\`\n`;
                   }
+                  if (currentText.trim()) {
+                    newToolText += currentText.trim() + '\n';
+                  }
+                  newToolText += `\`\`\`sql\n${data.sql}\n\`\`\`\n`;
+
+                  if (cotIndex >= 0) {
+                    const existingBlock = currentContent[cotIndex];
+                    currentContent = [
+                      ...currentContent.slice(0, cotIndex),
+                      { ...existingBlock, toolText: (existingBlock.toolText || '') + newToolText, isActive: true },
+                      ...currentContent.slice(cotIndex + 1),
+                    ];
+                  } else {
+                    currentContent = [...currentContent, {
+                      type: 'tool_use',
+                      toolName: 'chain_of_thought',
+                      toolText: newToolText,
+                      isActive: true
+                    }];
+                  }
+                  currentText = '';
+                  pendingSql = ''; // SQL is now committed
+
+                  // Update UI
+                  const otherContent = getVisualizationsAndHtml(currentContent);
+                  const cotBlock = currentContent.find(c => c.type === 'tool_use' && c.toolName === 'chain_of_thought');
+                  onUpdate([cotBlock!, ...otherContent]);
                 }
               } else if (data.type === 'tool_end') {
                 onToolEnd();
@@ -484,6 +826,42 @@ export default function ChatInterface() {
                 currentContent = [...currentContent.filter(c => c.type !== 'text'), { type: 'text', text: currentText }, { type: 'map', map: data.spec }];
                 currentText = '';
                 onUpdate(currentContent);
+              } else if (data.type === 'intermediate_text') {
+                // Streaming text from intermediate phase (e.g., Gemini gathering data in blended mode)
+                // Add to chain_of_thought so it shows with SQL queries
+                const cotIndex = currentContent.findIndex(c => c.type === 'tool_use' && c.toolName === 'chain_of_thought');
+                if (cotIndex >= 0) {
+                  currentContent = [
+                    ...currentContent.slice(0, cotIndex),
+                    {
+                      ...currentContent[cotIndex],
+                      toolText: (currentContent[cotIndex].toolText || '') + data.content,
+                      isActive: true
+                    },
+                    ...currentContent.slice(cotIndex + 1)
+                  ];
+                } else {
+                  currentContent = [...currentContent, {
+                    type: 'tool_use',
+                    toolName: 'chain_of_thought',
+                    toolText: data.content,
+                    isActive: true
+                  }];
+                }
+                onUpdate([...currentContent]);
+              } else if (data.type === 'intermediate_output') {
+                // Final intermediate output (replaces streaming content)
+                console.log(`[${modelId}] Received intermediate_output, content length:`, data.content?.length);
+                currentContent = [
+                  ...currentContent.filter(c => !(c.type === 'intermediate_output' && c.intermediateSource === data.source)),
+                  {
+                    type: 'intermediate_output',
+                    intermediateSource: data.source,
+                    intermediateContent: data.content
+                  }
+                ];
+                console.log(`[${modelId}] currentContent after intermediate_output:`, currentContent.map(c => c.type));
+                onUpdate([...currentContent]);
               } else if (data.type === 'error') {
                 onError(data.message || 'An error occurred');
               }
@@ -497,14 +875,138 @@ export default function ChatInterface() {
     }
   }, [includeMetadata]);
 
+  // Helper to send a message to a single model in head-to-head mode
+  const sendMessageToSingleModel = useCallback(async (
+    modelConfig: { id: string; name: string; model: string },
+    messageText: string
+  ) => {
+    const isMobile = window.innerWidth <= 768;
+    const userMessage: Message = { role: 'user', content: messageText };
+
+    // Use a promise to get the current messages after state update
+    // This avoids race conditions with stale ref values
+    const currentModelMessages = await new Promise<Message[]>((resolve) => {
+      setHeadToHeadMessages(prev => {
+        const msgs = prev[modelConfig.id] || [];
+        // Schedule resolve after this state update
+        setTimeout(() => resolve(msgs), 0);
+        // Add user message + assistant placeholder
+        return {
+          ...prev,
+          [modelConfig.id]: [...msgs, userMessage, { role: 'assistant', content: [] }]
+        };
+      });
+    });
+
+    // Set loading state for this model
+    setHeadToHeadLoading(prev => ({ ...prev, [modelConfig.id]: true }));
+
+    // Create abort controller
+    headToHeadAbortControllers.current[modelConfig.id] = new AbortController();
+
+    // Get API messages (now includes the latest response from previous question)
+    const modelMessages = [...currentModelMessages, userMessage];
+    const apiMessages = messagesToApiFormat(modelMessages);
+
+    await runModelStream(
+      modelConfig.id,
+      modelConfig.model,
+      apiMessages,
+      isMobile,
+      headToHeadAbortControllers.current[modelConfig.id].signal,
+      (content) => setHeadToHeadMessages(prev => {
+        const msgs = [...(prev[modelConfig.id] || [])];
+        if (msgs.length > 0) {
+          msgs[msgs.length - 1] = { role: 'assistant', content };
+        }
+        return { ...prev, [modelConfig.id]: msgs };
+      }),
+      (tool) => setHeadToHeadToolRunning(prev => ({ ...prev, [modelConfig.id]: tool })),
+      () => setHeadToHeadToolRunning(prev => ({ ...prev, [modelConfig.id]: null })),
+      () => {
+        setHeadToHeadLoading(prev => ({ ...prev, [modelConfig.id]: false }));
+        // Don't call processQueueForModel here - it's handled by the .finally() in processQueueForModel
+      },
+      (error) => {
+        setHeadToHeadMessages(prev => {
+          const msgs = [...(prev[modelConfig.id] || [])];
+          if (msgs.length > 0) {
+            msgs[msgs.length - 1] = { role: 'assistant', content: [{ type: 'text', text: `Error: ${error}` }] };
+          }
+          return { ...prev, [modelConfig.id]: msgs };
+        });
+        setHeadToHeadLoading(prev => ({ ...prev, [modelConfig.id]: false }));
+        // Don't call processQueueForModel here - it's handled by the .finally() in processQueueForModel
+      },
+    );
+  }, [runModelStream]);
+
+  // Keep messageQueueRef in sync with state
+  useEffect(() => {
+    messageQueueRef.current = messageQueue;
+  }, [messageQueue]);
+
+  // Ref to hold the latest processQueueForModel function (avoids stale closure in recursive calls)
+  const processQueueForModelRef = useRef<(modelConfig: { id: string; name: string; model: string }) => void>(() => {});
+
+  // Process next queued message for a specific model in head-to-head mode
+  const processQueueForModel = useCallback((modelConfig: { id: string; name: string; model: string }) => {
+    // Prevent double processing for this model
+    if (headToHeadProcessingRef.current[modelConfig.id]) {
+      return;
+    }
+
+    // Get current queue index for this model - do this SYNCHRONOUSLY
+    const currentIndex = headToHeadQueueIndexRef.current[modelConfig.id] || 0;
+    const currentQueue = messageQueueRef.current;
+
+    // Check if there's anything to process
+    if (currentIndex >= currentQueue.length) {
+      return;
+    }
+
+    // Set processing flag and increment index IMMEDIATELY (synchronously)
+    headToHeadProcessingRef.current[modelConfig.id] = true;
+    headToHeadQueueIndexRef.current[modelConfig.id] = currentIndex + 1;
+
+    const nextMessage = currentQueue[currentIndex];
+
+    // Send to this model with delay to allow DOM/state to settle
+    setTimeout(() => {
+      sendMessageToSingleModel(modelConfig, nextMessage).finally(() => {
+        // Clear processing flag after send completes
+        headToHeadProcessingRef.current[modelConfig.id] = false;
+        // Check for more queued items using ref to get latest function
+        processQueueForModelRef.current(modelConfig);
+      });
+    }, 150);
+  }, [sendMessageToSingleModel]);
+
+  // Keep the ref updated with latest function
+  processQueueForModelRef.current = processQueueForModel;
+
   const sendMessage = useCallback(async (messageText?: string) => {
     const text = messageText || inputValue.trim();
-    if (!text || isLoading) return;
+    if (!text) return;
 
-    userHasScrolledUp.current = false;
+    // Check if any model is still loading (for head-to-head) or global loading (standard mode)
+    const anyModelLoading = isHeadToHead
+      ? Object.values(headToHeadLoading).some(loading => loading)
+      : isLoading;
+
+    // If already loading, add message to queue
+    if (anyModelLoading) {
+      const newQueue = [...messageQueueRef.current, text];
+      messageQueueRef.current = newQueue; // Update ref immediately for synchronous access
+      setMessageQueue(newQueue);
+      setInputValue('');
+      return;
+    }
 
     const userMessage: Message = { role: 'user', content: text };
-    const newMessages = [...messages, userMessage];
+    // Use ref to get latest messages (avoids stale closure with queued messages)
+    const currentMessages = messagesRef.current;
+    const newMessages = [...currentMessages, userMessage];
     setMessages(newMessages);
     setInputValue('');
     setIsLoading(true);
@@ -512,10 +1014,27 @@ export default function ChatInterface() {
     // Head-to-head mode: run all models in parallel
     if (isHeadToHead) {
       const isMobile = window.innerWidth <= 768;
-      const apiMessages = messagesToApiFormat(newMessages);
 
-      // Reset head-to-head state
-      setHeadToHeadResponses({});
+      // Reset per-model queue indices and processing flags (new direct message resets queue tracking)
+      headToHeadQueueIndexRef.current = {};
+      headToHeadProcessingRef.current = {};
+
+      // Capture current messages for each model before updating state
+      const currentMessages: Record<string, Message[]> = {};
+      HEAD_TO_HEAD_MODELS.forEach(m => {
+        currentMessages[m.id] = [...(headToHeadMessages[m.id] || [])];
+      });
+
+      // Add user message + assistant placeholder to each model's conversation
+      setHeadToHeadMessages(() => {
+        const updated: Record<string, Message[]> = {};
+        HEAD_TO_HEAD_MODELS.forEach(m => {
+          updated[m.id] = [...currentMessages[m.id], userMessage, { role: 'assistant', content: [] }];
+        });
+        return updated;
+      });
+
+      // Set loading state for all models
       setHeadToHeadLoading(Object.fromEntries(HEAD_TO_HEAD_MODELS.map(m => [m.id, true])));
       setHeadToHeadToolRunning({});
 
@@ -524,350 +1043,157 @@ export default function ChatInterface() {
         headToHeadAbortControllers.current[m.id] = new AbortController();
       });
 
-      // Run all models in parallel
-      await Promise.all(HEAD_TO_HEAD_MODELS.map(async (modelConfig) => {
+      // Run all models in parallel - each model processes queue independently when done
+      HEAD_TO_HEAD_MODELS.forEach(async (modelConfig) => {
+        // Get API messages including the new user message
+        const modelMessages = [...currentMessages[modelConfig.id], userMessage];
+        const apiMessages = messagesToApiFormat(modelMessages);
+
         await runModelStream(
           modelConfig.id,
           modelConfig.model,
           apiMessages,
           isMobile,
           headToHeadAbortControllers.current[modelConfig.id].signal,
-          (content) => setHeadToHeadResponses(prev => ({ ...prev, [modelConfig.id]: content })),
+          (content) => setHeadToHeadMessages(prev => {
+            const msgs = [...(prev[modelConfig.id] || [])];
+            // Update the last message (assistant response)
+            if (msgs.length > 0) {
+              msgs[msgs.length - 1] = { role: 'assistant', content };
+            }
+            return { ...prev, [modelConfig.id]: msgs };
+          }),
           (tool) => setHeadToHeadToolRunning(prev => ({ ...prev, [modelConfig.id]: tool })),
           () => setHeadToHeadToolRunning(prev => ({ ...prev, [modelConfig.id]: null })),
-          () => setHeadToHeadLoading(prev => ({ ...prev, [modelConfig.id]: false })),
-          (error) => {
-            setHeadToHeadResponses(prev => ({ ...prev, [modelConfig.id]: [{ type: 'text', text: `Error: ${error}` }] }));
+          () => {
             setHeadToHeadLoading(prev => ({ ...prev, [modelConfig.id]: false }));
+            // Process queue for this specific model
+            processQueueForModel(modelConfig);
+          },
+          (error) => {
+            setHeadToHeadMessages(prev => {
+              const msgs = [...(prev[modelConfig.id] || [])];
+              if (msgs.length > 0) {
+                msgs[msgs.length - 1] = { role: 'assistant', content: [{ type: 'text', text: `Error: ${error}` }] };
+              }
+              return { ...prev, [modelConfig.id]: msgs };
+            });
+            setHeadToHeadLoading(prev => ({ ...prev, [modelConfig.id]: false }));
+            // Still process queue on error
+            processQueueForModel(modelConfig);
           },
         );
-      }));
+      });
 
       setIsLoading(false);
       return;
     }
 
-    // Standard single-model mode
+    // Standard single-model mode - use same runModelStream as head-to-head
     // Add placeholder for assistant response
     setMessages(prev => [...prev, { role: 'assistant', content: [] }]);
 
     // Create abort controller for this request
     abortControllerRef.current = new AbortController();
 
-    try {
-      // Detect if user is on mobile
-      const isMobile = window.innerWidth <= 768;
+    const isMobile = window.innerWidth <= 768;
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: messagesToApiFormat(newMessages),
-          isMobile,
-          includeMetadata,
-          model: currentModelConfig.model,
-        }),
-        signal: abortControllerRef.current.signal,
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to send message');
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const decoder = new TextDecoder();
-      let currentContent: MessageContent[] = [];
-      let currentText = '';
-      let pendingToolName = ''; // Track which tool just ran
-      let isStreamingHtml = false; // Track if we're in HTML streaming mode
-      let htmlStreamStart = -1; // Where HTML starts in the full text
-      let beforeHtmlText = ''; // Text before HTML started
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-
-              if (data.type === 'text') {
-                if (DEBUG_HTML_DETECTION) console.log('[Stream] text event, content length:', data.content.length, 'total currentText:', currentText.length + data.content.length);
-
-                // If a tool just ran and we have NEW substantial content,
-                // move the OLD currentText to tool_use section
-                if (pendingToolName && data.content.trim()) {
-                  const isDbTool = DATABASE_TOOLS.includes(pendingToolName);
-
-                  if (isDbTool && currentText.trim()) {
-                    const existingDbOpsIndex = currentContent.findIndex(
-                      c => c.type === 'tool_use' && c.toolName === 'database_ops'
-                    );
-
-                    if (existingDbOpsIndex >= 0) {
-                      const existingBlock = currentContent[existingDbOpsIndex];
-                      const newToolText = existingBlock.toolText
-                        ? existingBlock.toolText + '\n\n' + currentText.trim()
-                        : currentText.trim();
-                      currentContent = [
-                        ...currentContent.slice(0, existingDbOpsIndex),
-                        { ...existingBlock, toolText: newToolText, isActive: true },
-                        ...currentContent.slice(existingDbOpsIndex + 1),
-                      ];
-                    } else {
-                      currentContent = [
-                        ...currentContent,
-                        { type: 'tool_use', toolName: 'database_ops', toolText: currentText.trim(), isActive: true },
-                      ];
-                    }
-                  }
-
-                  // Start fresh with new text
-                  currentText = data.content;
-                  pendingToolName = '';
-                } else if (pendingToolName) {
-                  // Tool ran but new content is just whitespace - append but don't move yet
-                  currentText += data.content;
-                } else {
-                  // No tool ran, just append
-                  currentText += data.content;
-                }
-
-                // Detect if HTML is starting in the stream
-                if (!isStreamingHtml) {
-                  const htmlDetection = detectHtmlStart(currentText);
-                  if (htmlDetection.hasHtml) {
-                    isStreamingHtml = true;
-                    htmlStreamStart = htmlDetection.htmlStart;
-                    beforeHtmlText = htmlDetection.beforeText;
-                    if (DEBUG_HTML_DETECTION) console.log('[Stream] HTML detected at position:', htmlStreamStart, 'beforeText:', beforeHtmlText.slice(0, 100));
-                  }
-                }
-
-                const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html' || c.type === 'streaming_html');
-
-                if (isStreamingHtml) {
-                  // Show streaming HTML frame with the HTML portion
-                  const htmlChunks = currentText.slice(htmlStreamStart);
-                  const contentBlocks: MessageContent[] = [...preservedContent];
-                  if (beforeHtmlText) {
-                    contentBlocks.push({ type: 'text', text: beforeHtmlText });
-                  }
-                  contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: false });
-
-                  setMessages(prev => {
-                    const updated = [...prev];
-                    updated[updated.length - 1] = {
-                      role: 'assistant',
-                      content: contentBlocks,
-                    };
-                    return updated;
-                  });
-                } else {
-                  setMessages(prev => {
-                    const updated = [...prev];
-                    updated[updated.length - 1] = {
-                      role: 'assistant',
-                      content: [...preservedContent, { type: 'text', text: currentText }],
-                    };
-                    return updated;
-                  });
-                }
-              } else if (data.type === 'done') {
-                if (DEBUG_HTML_DETECTION) console.log('[Stream] done event received');
-
-                // Clear pending tool name
-                pendingToolName = '';
-
-                // Mark all active tool_use sections as inactive when stream ends
-                currentContent = currentContent.map(c =>
-                  c.type === 'tool_use' && c.isActive ? { ...c, isActive: false } : c
-                );
-
-                // Handle final content - either streaming HTML completion or normal text
-                if (DEBUG_HTML_DETECTION) console.log('[Done] currentText length:', currentText.length);
-                if (DEBUG_HTML_DETECTION) console.log('[Done] currentContent types:', currentContent.map(c => c.type));
-                if (DEBUG_HTML_DETECTION) console.log('[Done] isStreamingHtml:', isStreamingHtml);
-
-                if (isStreamingHtml) {
-                  // We were streaming HTML - mark it as complete
-                  const htmlChunks = currentText.slice(htmlStreamStart);
-                  const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map');
-                  const contentBlocks: MessageContent[] = [...preservedContent];
-                  if (beforeHtmlText) {
-                    contentBlocks.push({ type: 'text', text: beforeHtmlText });
-                  }
-                  // Keep as streaming_html but mark complete - this triggers the iframe to close the document
-                  contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: true });
-
-                  setMessages(prev => {
-                    const updated = [...prev];
-                    updated[updated.length - 1] = {
-                      role: 'assistant',
-                      content: contentBlocks,
-                    };
-                    return updated;
-                  });
-                } else {
-                  // Normal text handling
-                  const finalBlocks: MessageContent[] = [];
-                  if (currentText) {
-                    if (DEBUG_HTML_DETECTION) {
-                      console.log('[HTML Detection] Checking text (full):', currentText);
-                      console.log('[HTML Detection] Text includes ```html:', currentText.includes('```html'));
-                      console.log('[HTML Detection] Text includes <!DOCTYPE:', currentText.toLowerCase().includes('<!doctype'));
-                      console.log('[HTML Detection] isHtmlContent result:', isHtmlContent(currentText));
-                    }
-                    if (isHtmlContent(currentText)) {
-                      const parts = extractHtmlParts(currentText);
-                      if (DEBUG_HTML_DETECTION) {
-                        console.log('[HTML Detection] extractHtmlParts result:', parts ? 'found' : 'null');
-                        if (parts) console.log('[HTML Detection] HTML length:', parts.html.length);
-                      }
-                      if (parts) {
-                        if (parts.beforeText) {
-                          finalBlocks.push({ type: 'text', text: parts.beforeText });
-                        }
-                        finalBlocks.push({ type: 'html', html: parts.html });
-                        if (parts.afterText) {
-                          finalBlocks.push({ type: 'text', text: parts.afterText });
-                        }
-                      } else {
-                        finalBlocks.push({ type: 'text', text: currentText });
-                      }
-                    } else {
-                      finalBlocks.push({ type: 'text', text: currentText });
-                    }
-                  }
-
-                  const finalContent = finalBlocks.length > 0
-                    ? [...currentContent, ...finalBlocks]
-                    : currentContent;
-                  setMessages(prev => {
-                    const updated = [...prev];
-                    updated[updated.length - 1] = {
-                      role: 'assistant',
-                      content: finalContent,
-                    };
-                    return updated;
-                  });
-                }
-              }
-              else if (data.type === 'chart') {
-                currentContent = [
-                  ...currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html' || c.type === 'streaming_html'),
-                  { type: 'text', text: currentText },
-                  { type: 'chart', chart: data.spec },
-                ];
-                currentText = '';
-                setMessages(prev => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    role: 'assistant',
-                    content: currentContent,
-                  };
-                  return updated;
-                });
-              } else if (data.type === 'map') {
-                currentContent = [
-                  ...currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html' || c.type === 'streaming_html'),
-                  { type: 'text', text: currentText },
-                  { type: 'map', map: data.spec },
-                ];
-                currentText = '';
-                setMessages(prev => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    role: 'assistant',
-                    content: currentContent,
-                  };
-                  return updated;
-                });
-              } else if (data.type === 'tool_start') {
-                const isDbTool = DATABASE_TOOLS.includes(data.tool);
-
-                // Just mark that a tool is running - currentText stays visible
-                // It will be moved to tool_use when NEW text arrives
-                pendingToolName = data.tool;
-
-                // Update tool running state
-                setIsToolRunning(data.tool);
-
-                // Create/update tool_use block (just for activity indicator)
-                if (isDbTool) {
-                  const existingDbOpsIndex = currentContent.findIndex(
-                    c => c.type === 'tool_use' && c.toolName === 'database_ops'
-                  );
-                  if (existingDbOpsIndex < 0) {
-                    currentContent = [
-                      ...currentContent,
-                      { type: 'tool_use', toolName: 'database_ops', toolText: '', isActive: true },
-                    ];
-                  } else {
-                    currentContent = [
-                      ...currentContent.slice(0, existingDbOpsIndex),
-                      { ...currentContent[existingDbOpsIndex], isActive: true },
-                      ...currentContent.slice(existingDbOpsIndex + 1),
-                    ];
-                  }
-                }
-
-                // Keep showing current text as regular text at the bottom
-                const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html' || c.type === 'streaming_html');
-                setMessages(prev => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    role: 'assistant',
-                    content: currentText
-                      ? [...preservedContent, { type: 'text', text: currentText }]
-                      : preservedContent,
-                  };
-                  return updated;
-                });
-              } else if (data.type === 'tool_end') {
-                setIsToolRunning(null);
-              } else if (data.type === 'error') {
-                setMessages(prev => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    role: 'assistant',
-                    content: data.message || 'Sorry, an error occurred. Please try again.',
-                  };
-                  return updated;
-                });
-              }
-            } catch {
-              // Skip invalid JSON lines
-            }
-          }
-        }
-      }
-    } catch (error) {
-      // Don't show error message if request was aborted (e.g., user cleared chat)
-      if (error instanceof Error && error.name === 'AbortError') {
-        return;
-      }
-      console.error('Chat error:', error);
-      setMessages(prev => {
+    await runModelStream(
+      'standalone',
+      currentModelConfig.model,
+      messagesToApiFormat(newMessages),
+      isMobile,
+      abortControllerRef.current.signal,
+      // onUpdate
+      (content) => setMessages(prev => {
         const updated = [...prev];
-        updated[updated.length - 1] = {
-          role: 'assistant',
-          content: 'Sorry, I encountered an error. Please try again.',
-        };
+        if (updated.length > 0) {
+          updated[updated.length - 1] = { role: 'assistant', content };
+        }
         return updated;
-      });
-    } finally {
-      setIsLoading(false);
-      setIsToolRunning(null);
-      abortControllerRef.current = null;
+      }),
+      // onToolStart
+      (tool) => setIsToolRunning(tool),
+      // onToolEnd
+      () => setIsToolRunning(null),
+      // onDone
+      () => {
+        setIsLoading(false);
+        setIsToolRunning(null);
+        abortControllerRef.current = null;
+      },
+      // onError
+      (error) => {
+        setMessages(prev => {
+          const updated = [...prev];
+          if (updated.length > 0) {
+            updated[updated.length - 1] = { role: 'assistant', content: [{ type: 'text', text: `Error: ${error}` }] };
+          }
+          return updated;
+        });
+        setIsLoading(false);
+        setIsToolRunning(null);
+        abortControllerRef.current = null;
+      },
+    )
+  }, [inputValue, isLoading, includeMetadata, currentModelConfig, isHeadToHead, headToHeadMessages, headToHeadLoading, runModelStream, processQueueForModel]);
+
+  // Process queued messages when loading completes (standard mode only)
+  // Head-to-head mode handles queue processing per-model via processQueueForModel
+  useEffect(() => {
+    // Skip for head-to-head mode - it handles queue per-model
+    if (isHeadToHead) return;
+
+    // Only process if not loading, queue has items, and we're not already processing
+    if (!isLoading && messageQueue.length > 0 && !isProcessingQueueRef.current) {
+      isProcessingQueueRef.current = true;
+      const [nextMessage, ...remainingMessages] = messageQueue;
+      setMessageQueue(remainingMessages);
+      // Delay to ensure state is fully settled before sending next message
+      setTimeout(() => {
+        sendMessage(nextMessage);
+        // Reset flag after sendMessage has been called (isLoading will be true by then)
+        isProcessingQueueRef.current = false;
+      }, 100);
     }
-  }, [inputValue, isLoading, messages, includeMetadata, currentModelConfig, isHeadToHead, runModelStream]);
+  }, [isLoading, messageQueue, sendMessage, isHeadToHead]);
+
+  // Clean up queue in head-to-head mode when all models have processed all items
+  useEffect(() => {
+    if (!isHeadToHead || messageQueue.length === 0) return;
+
+    // Check if all models have processed all queue items, are done loading, and not processing
+    const allModelsIdle = HEAD_TO_HEAD_MODELS.every(m => !headToHeadLoading[m.id]);
+    const allModelsNotProcessing = HEAD_TO_HEAD_MODELS.every(m => !headToHeadProcessingRef.current[m.id]);
+    const allModelsCaughtUp = HEAD_TO_HEAD_MODELS.every(m =>
+      (headToHeadQueueIndexRef.current[m.id] || 0) >= messageQueue.length
+    );
+
+    if (allModelsIdle && allModelsNotProcessing && allModelsCaughtUp) {
+      // All models have processed all queued messages - clear queue and indices
+      messageQueueRef.current = [];
+      setMessageQueue([]);
+      headToHeadQueueIndexRef.current = {};
+      headToHeadProcessingRef.current = {};
+    }
+  }, [isHeadToHead, messageQueue, headToHeadLoading]);
+
+  // Trigger idle models to process new queue items (when queue grows while a model is idle)
+  useEffect(() => {
+    if (!isHeadToHead || messageQueue.length === 0) return;
+
+    // Check each model - if it's idle and has unprocessed queue items, trigger it
+    HEAD_TO_HEAD_MODELS.forEach(modelConfig => {
+      const isIdle = !headToHeadLoading[modelConfig.id];
+      const isNotProcessing = !headToHeadProcessingRef.current[modelConfig.id];
+      const currentIndex = headToHeadQueueIndexRef.current[modelConfig.id] || 0;
+      const hasUnprocessedItems = currentIndex < messageQueue.length;
+
+      if (isIdle && isNotProcessing && hasUnprocessedItems) {
+        processQueueForModel(modelConfig);
+      }
+    });
+  }, [isHeadToHead, messageQueue, headToHeadLoading, processQueueForModel]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -882,18 +1208,115 @@ export default function ChatInterface() {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    // Abort any ongoing head-to-head requests
+    Object.values(headToHeadAbortControllers.current).forEach(controller => {
+      controller.abort();
+    });
+    headToHeadAbortControllers.current = {};
+
     setMessages([]);
+    setHeadToHeadMessages({});
+    setHeadToHeadLoading({});
+    setHeadToHeadToolRunning({});
     setIsLoading(false);
     setIsToolRunning(null);
+    // Clear chat history but keep user preferences (model selection, metadata toggle)
     localStorage.removeItem(storageKey);
+    localStorage.removeItem('mcp_head_to_head_history');
   };
 
   const handleExampleClick = (example: string) => {
     sendMessage(example);
   };
 
+  // Helper to check if a message has content worth rendering
+  const hasMessageContent = (msg: Message) => {
+    return typeof msg.content === 'string'
+      ? msg.content.length > 0
+      : msg.content.length > 0 && msg.content.some(block =>
+          (block.type === 'text' && block.text) ||
+          (block.type === 'chart' && block.chart) ||
+          (block.type === 'map' && block.map) ||
+          (block.type === 'html' && block.html) ||
+          (block.type === 'streaming_html' && block.htmlChunks) ||
+          (block.type === 'tool_use' && block.toolName && (block.toolText || block.isActive)) ||
+          (block.type === 'intermediate_output' && block.intermediateContent)
+        );
+  };
+
+  // Helper to render a single message
+  // keyPrefix is used to ensure unique keys across different tabs in head-to-head mode
+  const renderMessage = (msg: Message, idx: number, keyPrefix: string = 'msg') => {
+    if (!hasMessageContent(msg)) return null;
+
+    const ContentWrapper = msg.role === 'assistant' ? MaxWidthContainer : 'div';
+
+    const hasHtml = typeof msg.content !== 'string' && msg.content.some(block =>
+      (block.type === 'html' && block.html) ||
+      (block.type === 'streaming_html' && block.htmlChunks)
+    );
+
+    const isStreamingHtml = typeof msg.content !== 'string' && msg.content.some(block =>
+      block.type === 'streaming_html' && block.htmlChunks && !block.isComplete
+    );
+
+    return (
+      <div key={`${keyPrefix}-${idx}`} className={`chat-message chat-message-${msg.role}${hasHtml ? ' has-html' : ''}`}>
+        <ContentWrapper className="chat-message-content">
+          {typeof msg.content === 'string' ? (
+            msg.role === 'assistant' ? (
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.content}</ReactMarkdown>
+            ) : (
+              msg.content
+            )
+          ) : (
+            msg.content.map((block, blockIdx) => {
+              const blockKey = `${keyPrefix}-${idx}-${blockIdx}`;
+              if (block.type === 'text' && block.text) {
+                // Filter out both HTML and SQL from displayed text
+                let displayText = filterHtmlFromText(block.text);
+                displayText = filterSqlFromText(displayText);
+                if (!displayText.trim()) return null;
+                return <ReactMarkdown key={blockKey} remarkPlugins={[remarkGfm]} components={markdownComponents}>{displayText}</ReactMarkdown>;
+              }
+              if (block.type === 'chart' && block.chart) {
+                return <ChatChart key={blockKey} spec={block.chart} />;
+              }
+              if (block.type === 'map' && block.map) {
+                return <ChatMap key={blockKey} spec={block.map} />;
+              }
+              if (block.type === 'html' && block.html) {
+                return <HtmlFrame key={blockKey} html={block.html} />;
+              }
+              if (block.type === 'streaming_html' && block.htmlChunks) {
+                return <StreamingHtmlFrame key={blockKey} htmlChunks={block.htmlChunks} isComplete={block.isComplete || false} />;
+              }
+              if (block.type === 'tool_use' && block.toolName) {
+                return <ToolUseSection key={blockKey} toolName={block.toolName} toolText={block.toolText || ''} isActive={block.isActive} isStreaming={isStreamingHtml} keyPrefix={blockKey} />;
+              }
+              if (block.type === 'intermediate_output' && block.intermediateContent) {
+                return <IntermediateOutputSection key={blockKey} source={block.intermediateSource || 'unknown'} content={block.intermediateContent} />;
+              }
+              return null;
+            })
+          )}
+        </ContentWrapper>
+      </div>
+    );
+  };
+
+  // Check if there's any conversation to display
+  const hasConversation = isHeadToHead
+    ? Object.values(headToHeadMessages).some(msgs => msgs.length > 0)
+    : messages.length > 0;
+
   // Apply theme based on selected model
   const themeClass = selectedModel === 'gemini' ? 'theme-gemini' : (selectedModel === 'blended' || selectedModel === 'head-to-head') ? 'theme-quacker' : '';
+
+  // Show minimal loading state until localStorage is loaded to avoid flash
+  if (!isHydrated) {
+    return <div className="chat-container" style={{ opacity: 0 }} />;
+  }
 
   return (
     <div className={`chat-container ${themeClass}`}>
@@ -906,7 +1329,7 @@ export default function ChatInterface() {
             <div className="chat-subtitle">Ask questions of business data in MotherDuck using a {currentModelConfig.subtitle} interface.</div>
           </div>
         </div>
-        {messages.length > 0 && (
+        {hasConversation && (
           <button className="chat-clear" onClick={clearHistory}>
             Clear Chat
           </button>
@@ -914,9 +1337,9 @@ export default function ChatInterface() {
       </header>
 
       <div className="chat-messages" ref={messagesContainerRef}>
-        {messages.length === 0 ? (
+        {!hasConversation ? (
           <div className="chat-welcome">
-                        <h2><span className="welcome-full">Welcome to {currentModelConfig.appName}</span><span className="welcome-short">Welcome</span></h2>
+            <h2><span className="welcome-full">Welcome to {currentModelConfig.appName}</span><span className="welcome-short">Welcome</span></h2>
             <p>We've hooked up this interface to MotherDuck using the MotherDuck MCP Server. You have access to business data for a fictitious business, Eastlake, which manufactures and sells products to businesses. Start asking it some questions.</p>
             <div className="chat-examples">
               {EXAMPLE_PROMPTS.map((example, idx) => (
@@ -933,7 +1356,7 @@ export default function ChatInterface() {
               <input
                 type="checkbox"
                 checked={includeMetadata}
-                onChange={(e) => setIncludeMetadata(e.target.checked)}
+                onChange={(e) => saveIncludeMetadata(e.target.checked)}
               />
               <span className="toggle-slider"></span>
               <span className="toggle-label">Include metadata in prompt</span>
@@ -942,7 +1365,7 @@ export default function ChatInterface() {
               <label className="model-selector-label">Model:</label>
               <select
                 value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
+                onChange={(e) => saveSelectedModel(e.target.value)}
                 className="model-dropdown"
               >
                 {MODEL_OPTIONS.map((option) => (
@@ -953,172 +1376,93 @@ export default function ChatInterface() {
               </select>
             </div>
           </div>
-        ) : (
-          messages.map((msg, idx) => {
-            // Check if message has content
-            const hasContent = typeof msg.content === 'string'
-              ? msg.content.length > 0
-              : msg.content.length > 0 && msg.content.some(block =>
-                  (block.type === 'text' && block.text) ||
-                  (block.type === 'chart' && block.chart) ||
-                  (block.type === 'map' && block.map) ||
-                  (block.type === 'html' && block.html) ||
-                  (block.type === 'streaming_html' && block.htmlChunks) ||
-                  (block.type === 'tool_use' && block.toolName && (block.toolText || block.isActive))
-                );
-
-            // Skip rendering empty messages
-            if (!hasContent) return null;
-
-            const ContentWrapper = msg.role === 'assistant' ? MaxWidthContainer : 'div';
-
-            // Check if message contains HTML content (including streaming)
-            const hasHtml = typeof msg.content !== 'string' && msg.content.some(block =>
-              (block.type === 'html' && block.html) ||
-              (block.type === 'streaming_html' && block.htmlChunks)
-            );
-
-            // Check if message is currently streaming HTML (not yet complete)
-            const isStreamingHtml = typeof msg.content !== 'string' && msg.content.some(block =>
-              block.type === 'streaming_html' && block.htmlChunks && !block.isComplete
-            );
-
-            return (
-              <div key={idx} className={`chat-message chat-message-${msg.role}${hasHtml ? ' has-html' : ''}`}>
-                <ContentWrapper className="chat-message-content">
-                  {typeof msg.content === 'string' ? (
-                    msg.role === 'assistant' ? (
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.content}</ReactMarkdown>
-                    ) : (
-                      msg.content
-                    )
-                  ) : (
-                    msg.content.map((block, blockIdx) => {
-                      if (block.type === 'text' && block.text) {
-                        // Filter out HTML code blocks from text display
-                        const displayText = filterHtmlFromText(block.text);
-                        if (!displayText) return null;
-                        return <ReactMarkdown key={blockIdx} remarkPlugins={[remarkGfm]} components={markdownComponents}>{displayText}</ReactMarkdown>;
-                      }
-                      if (block.type === 'chart' && block.chart) {
-                        return <ChatChart key={blockIdx} spec={block.chart} />;
-                      }
-                      if (block.type === 'map' && block.map) {
-                        return <ChatMap key={blockIdx} spec={block.map} />;
-                      }
-                      if (block.type === 'html' && block.html) {
-                        return <HtmlFrame key={blockIdx} html={block.html} />;
-                      }
-                      if (block.type === 'streaming_html' && block.htmlChunks) {
-                        return <StreamingHtmlFrame key={blockIdx} htmlChunks={block.htmlChunks} isComplete={block.isComplete || false} />;
-                      }
-                      if (block.type === 'tool_use' && block.toolName && (block.toolText || block.isActive)) {
-                        return <ToolUseSection key={blockIdx} toolName={block.toolName} toolText={block.toolText || ''} isActive={block.isActive} isStreaming={isStreamingHtml} />;
-                      }
-                      return null;
-                    })
-                  )}
-                </ContentWrapper>
+        ) : isHeadToHead ? (
+          /* Head-to-head mode: render ALL tabs but only show the active one */
+          /* This preserves streaming state when switching tabs */
+          /* Only render the active tab's content */
+          <>
+            {(headToHeadMessages[activeTab] || []).map((msg, idx) => renderMessage(msg, idx, activeTab))}
+            {headToHeadLoading[activeTab] && (
+              <div className="chat-loading-indicator">
+                <span className="chat-loading-dot" />
+                <span className="chat-loading-text">
+                  {headToHeadToolRunning[activeTab] ? 'Querying data' : 'Thinking'}
+                </span>
               </div>
-            );
-          })
-        )}
-        {/* Head-to-head tabbed interface */}
-        {isHeadToHead && messages.length > 0 && Object.keys(headToHeadResponses).length > 0 && (
-          <div className="head-to-head-container">
-            <div className="head-to-head-tabs">
-              {HEAD_TO_HEAD_MODELS.map((model) => (
-                <button
-                  key={model.id}
-                  className={`head-to-head-tab ${activeTab === model.id ? 'active' : ''} ${headToHeadLoading[model.id] ? 'loading' : ''}`}
-                  onClick={() => setActiveTab(model.id)}
-                >
-                  {model.name}
-                  {headToHeadLoading[model.id] && <span className="tab-spinner" />}
-                </button>
-              ))}
-            </div>
-            <div className="head-to-head-content">
-              {HEAD_TO_HEAD_MODELS.map((model) => {
-                const content = headToHeadResponses[model.id] || [];
-                const isActive = activeTab === model.id;
-                const modelLoading = headToHeadLoading[model.id];
-                const modelToolRunning = headToHeadToolRunning[model.id];
-
-                return (
-                  <div key={model.id} className={`head-to-head-panel ${isActive ? 'active' : ''}`}>
-                    <div className="chat-message chat-message-assistant">
-                      <MaxWidthContainer className="chat-message-content">
-                        {content.map((block, blockIdx) => {
-                          if (block.type === 'text' && block.text) {
-                            const displayText = filterHtmlFromText(block.text);
-                            if (!displayText) return null;
-                            return <ReactMarkdown key={blockIdx} remarkPlugins={[remarkGfm]} components={markdownComponents}>{displayText}</ReactMarkdown>;
-                          }
-                          if (block.type === 'chart' && block.chart) {
-                            return <ChatChart key={blockIdx} spec={block.chart} />;
-                          }
-                          if (block.type === 'map' && block.map) {
-                            return <ChatMap key={blockIdx} spec={block.map} />;
-                          }
-                          if (block.type === 'html' && block.html) {
-                            return <HtmlFrame key={blockIdx} html={block.html} />;
-                          }
-                          if (block.type === 'streaming_html' && block.htmlChunks) {
-                            return <StreamingHtmlFrame key={blockIdx} htmlChunks={block.htmlChunks} isComplete={block.isComplete || false} />;
-                          }
-                          if (block.type === 'tool_use' && block.toolName && (block.toolText || block.isActive)) {
-                            return <ToolUseSection key={blockIdx} toolName={block.toolName} toolText={block.toolText || ''} isActive={block.isActive} isStreaming={false} />;
-                          }
-                          return null;
-                        })}
-                        {modelLoading && content.length === 0 && (
-                          <div className="chat-loading-indicator">
-                            <span className="chat-loading-dot" />
-                            <span className="chat-loading-text">
-                              {modelToolRunning ? 'Querying data' : 'Thinking'}
-                            </span>
-                          </div>
-                        )}
-                      </MaxWidthContainer>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-        {isLoading && !isHeadToHead && (
-          <div className="chat-loading-indicator">
-            <span className="chat-loading-dot" />
-            <span className="chat-loading-text">
-              {isToolRunning ? 'Querying data' : 'Thinking'}
-            </span>
-          </div>
+            )}
+          </>
+        ) : (
+          /* Standard mode: render messages normally */
+          <>
+            {messages.map((msg, idx) => renderMessage(msg, idx, 'msg'))}
+            {isLoading && (
+              <div className="chat-loading-indicator">
+                <span className="chat-loading-dot" />
+                <span className="chat-loading-text">
+                  {isToolRunning ? 'Querying data' : 'Thinking'}
+                </span>
+              </div>
+            )}
+          </>
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      <div className={`chat-input-area${messages.length === 0 ? ' welcome' : ''}`}>
-        <input
-          ref={inputRef}
-          type="text"
-          className="chat-input"
-          placeholder="Ask a question about your data..."
-          value={inputValue}
-          onChange={e => setInputValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={isLoading}
-        />
-        <button
-          className="chat-send"
-          onClick={() => sendMessage()}
-          disabled={isLoading || !inputValue.trim()}
-          aria-label="Send message"
-        >
-          →
-        </button>
-      </div>
+      {/* Head-to-head tabs - fixed above input */}
+      {isHeadToHead && hasConversation && (
+        <div className="head-to-head-tab-bar">
+          {HEAD_TO_HEAD_MODELS.map((model) => (
+            <button
+              key={model.id}
+              className={`head-to-head-tab ${activeTab === model.id ? 'active' : ''} ${headToHeadLoading[model.id] ? 'loading' : ''}`}
+              onClick={() => saveActiveTab(model.id)}
+            >
+              {model.name}
+              {headToHeadLoading[model.id] && <span className="tab-spinner" />}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {(() => {
+        // Calculate remaining queue items based on minimum index processed across models
+        let remainingCount = messageQueue.length;
+        if (isHeadToHead && messageQueue.length > 0) {
+          const minIndex = Math.min(
+            ...HEAD_TO_HEAD_MODELS.map(m => headToHeadQueueIndexRef.current[m.id] || 0)
+          );
+          remainingCount = Math.max(0, messageQueue.length - minIndex);
+        }
+        return (
+          <div className={`chat-input-area${!hasConversation ? ' welcome' : ''}`}>
+            {remainingCount > 0 && (
+              <div className="queued-message-indicator">
+                {remainingCount === 1
+                  ? `Next: ${messageQueue[messageQueue.length - remainingCount]?.slice(0, 50) || ''}${(messageQueue[messageQueue.length - remainingCount]?.length || 0) > 50 ? '...' : ''}`
+                  : `${remainingCount} questions queued`
+                }
+              </div>
+            )}
+            <input
+              ref={inputRef}
+              type="text"
+              className="chat-input"
+              placeholder={remainingCount > 0 ? `${remainingCount} queued - type another or wait...` : "Ask a question about your data..."}
+              value={inputValue}
+              onChange={e => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+            />
+            <button
+              className="chat-send"
+              onClick={() => sendMessage()}
+              disabled={!inputValue.trim()}
+              aria-label="Send message"
+            >
+              {isLoading && remainingCount === 0 ? '◷' : '→'}
+            </button>
+          </div>
+        );
+      })()}
     </div>
   );
 }

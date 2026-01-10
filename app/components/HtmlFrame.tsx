@@ -14,12 +14,25 @@ interface StreamingHtmlFrameProps {
   title?: string;
 }
 
+// Simple hash function to detect different documents
+function simpleHash(str: string): number {
+  let hash = 0;
+  const sample = str.slice(0, 500); // Only hash first 500 chars for speed
+  for (let i = 0; i < sample.length; i++) {
+    const char = sample.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return hash;
+}
+
 export function StreamingHtmlFrame({ htmlChunks, isComplete, title }: StreamingHtmlFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(450);
   const [isVisible, setIsVisible] = useState(false);
   const writtenLength = useRef(0);
   const docOpened = useRef(false);
+  const documentHashRef = useRef<number>(0); // Hash of document start to detect new docs
 
   // Minimum content length before showing iframe (approximates ~100px of content)
   // This accounts for HTML tags, so we look for content after <body>
@@ -91,18 +104,51 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title }: StreamingH
     // Check if we should show the iframe based on content length
     checkVisibility(cleanedHtml);
 
+    // Detect if this is a completely new document using hash
+    const currentHash = simpleHash(cleanedHtml);
+    const isNewDocument = documentHashRef.current !== 0 &&
+      cleanedHtml.length > 100 &&
+      writtenLength.current > 100 &&
+      currentHash !== documentHashRef.current &&
+      // Also check that new content doesn't start with what we already wrote
+      !cleanedHtml.startsWith(cleanedHtml.slice(0, Math.min(100, writtenLength.current)));
+
+    if (isNewDocument) {
+      // Reset for new document
+      console.log('[StreamingHtml] Detected new document (hash mismatch), resetting');
+      try {
+        doc.open();
+        doc.write('');
+        doc.close();
+      } catch { /* ignore */ }
+      writtenLength.current = 0;
+      docOpened.current = false;
+      documentHashRef.current = 0;
+      setIsVisible(false);
+      setHeight(450);
+    }
+
     // Open document on first chunk
     if (!docOpened.current && cleanedHtml.length > 0) {
       doc.open();
       docOpened.current = true;
       writtenLength.current = 0;
+      documentHashRef.current = currentHash;
     }
 
-    // Write new content
+    // Write new content - but verify we're continuing the same document
     if (docOpened.current && cleanedHtml.length > writtenLength.current) {
       const newContent = cleanedHtml.slice(writtenLength.current);
-      doc.write(newContent);
-      writtenLength.current = cleanedHtml.length;
+      try {
+        doc.write(newContent);
+        writtenLength.current = cleanedHtml.length;
+      } catch (e) {
+        console.error('[StreamingHtml] Error writing to document:', e);
+        // Reset on error
+        writtenLength.current = 0;
+        docOpened.current = false;
+        documentHashRef.current = 0;
+      }
 
       // Update height periodically
       updateHeight();
@@ -110,7 +156,9 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title }: StreamingH
 
     // Close document when complete
     if (isComplete && docOpened.current) {
-      doc.close();
+      try {
+        doc.close();
+      } catch { /* ignore */ }
       // Final height updates
       setTimeout(updateHeight, 100);
       setTimeout(updateHeight, 500);
@@ -122,6 +170,7 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title }: StreamingH
     return () => {
       writtenLength.current = 0;
       docOpened.current = false;
+      documentHashRef.current = 0;
     };
   }, []);
 
