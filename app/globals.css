@@ -1337,7 +1337,7 @@ body:has(.theme-quacker) {
   }
 
   .chat-subtitle {
-    font-size: 8.4px;
+    font-size: 12px;
   }
 
   .chat-welcome h2 {
