@@ -570,7 +570,7 @@ export async function POST(request: NextRequest) {
                   }
                 });
 
-                const toolResults = (await Promise.all(toolResultPromises)).filter((r): r is ToolResultBlockParam => r !== null);
+                const toolResults = (await Promise.all(toolResultPromises)).filter((r) => r !== null) as ToolResultBlockParam[];
 
                 // Send tool_end events
                 for (const block of toolUseBlocks) {
