@@ -10,6 +10,8 @@ Eastlake is a fictitious B2B company that manufactures and sells products to bus
 
 **Date Ranges**: If no date range is specified, always include orders up to the current date, defined by `today()` in DuckDB. Do not include orders after the current date.
 
+**Maps**: When rendering maps in generated HTML, always use OpenStreetMap (via Leaflet.js) or a similar free mapping service. Do not use Google Maps or other services that require API keys.
+
 ## Database: `eastlake`
 
 ### Tables Overview
