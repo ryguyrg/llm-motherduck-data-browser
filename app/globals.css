@@ -1082,6 +1082,7 @@ body:has(.theme-quacker) {
   flex-direction: column;
   width: 100%;
   margin-top: 16px;
+  box-sizing: border-box;
 }
 
 .head-to-head-tabs {
@@ -1135,18 +1136,27 @@ body:has(.theme-quacker) {
 .head-to-head-content {
   position: relative;
   min-height: 200px;
+  width: 100%;
 }
 
 .head-to-head-panel {
   display: none;
   padding: 16px 0;
+  width: 100%;
 }
 
 .head-to-head-panel.active {
   display: block;
+  width: 100%;
 }
 
 .head-to-head-panel .chat-message-assistant {
+  max-width: 100%;
+  width: 100%;
+}
+
+.head-to-head-panel .chat-message-assistant .chat-message-content {
+  width: 100%;
   max-width: 100%;
 }
 
