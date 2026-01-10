@@ -710,6 +710,7 @@ body {
 .chat-input-area {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 12px;
   padding: 16px 24px;
   background: rgb(250, 249, 245);
@@ -734,13 +735,15 @@ body {
 
 .chat-input {
   flex: 1;
-  padding: 12px 16px;
+  height: 44px;
+  padding: 0 16px;
   border: 1px solid #ddd;
   border-radius: var(--border-radius);
   font-size: 14px;
   font-family: Georgia, 'Times New Roman', serif;
   outline: none;
   transition: border-color 0.15s ease;
+  box-sizing: border-box;
 }
 
 .chat-input:focus {
@@ -749,7 +752,8 @@ body {
 
 /* Welcome state - larger input */
 .chat-input-area.welcome .chat-input {
-  padding: 24px 16px;
+  height: 72px;
+  padding: 0 20px;
   font-size: 28px;
 }
 
@@ -769,8 +773,8 @@ body {
 }
 
 .chat-send {
-  width: 48px;
-  height: 48px;
+  width: 44px;
+  height: 44px;
   background: rgb(198, 97, 63);
   border: none;
   border-radius: 12px;
@@ -782,6 +786,8 @@ body {
   align-items: center;
   justify-content: center;
   color: #ccc;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .chat-send:hover:not(:disabled) {
@@ -1015,6 +1021,7 @@ body:has(.theme-gemini) {
 }
 
 .theme-gemini .chat-input {
+  height: 44px;
   background: var(--bg-secondary);
   border: none;
   border-radius: 24px;
@@ -1031,6 +1038,8 @@ body:has(.theme-gemini) {
 }
 
 .theme-gemini .chat-send {
+  width: 44px;
+  height: 44px;
   background: var(--bg-secondary);
   color: var(--accent-blue);
   border-radius: 50%;
@@ -1185,6 +1194,7 @@ body:has(.theme-gemini) {
 }
 
 .theme-quacker .chat-input {
+  height: 44px;
   background: white;
   border: 2px solid var(--md-black);
   border-radius: 0;
@@ -1203,6 +1213,8 @@ body:has(.theme-gemini) {
 }
 
 .theme-quacker .chat-send {
+  width: 44px;
+  height: 44px;
   background: var(--md-sky);
   color: var(--md-black);
   border: 2px solid var(--md-black);
@@ -1368,7 +1380,8 @@ body:has(.theme-quacker) {
 
   /* Welcome state - scale down the large input for mobile */
   .chat-input-area.welcome .chat-input {
-    padding: 14px 12px;
+    height: 48px;
+    padding: 0 12px;
     font-size: 16px;
   }
 
@@ -1390,7 +1403,8 @@ body:has(.theme-quacker) {
 /* Extra small screens - further scale down */
 @media (max-width: 400px) {
   .chat-input-area.welcome .chat-input {
-    padding: 12px 10px;
+    height: 42px;
+    padding: 0 10px;
     font-size: 14px;
   }
 
