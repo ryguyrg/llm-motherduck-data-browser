@@ -1076,6 +1076,80 @@ body:has(.theme-quacker) {
   background: var(--md-sand);
 }
 
+/* Head-to-Head Mode */
+.head-to-head-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-top: 16px;
+}
+
+.head-to-head-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--md-black, #383838);
+}
+
+.head-to-head-tab {
+  padding: 12px 24px;
+  background: var(--md-sand, #F4EFEA);
+  border: 2px solid var(--md-black, #383838);
+  border-bottom: none;
+  border-radius: 0;
+  font-family: 'Cousine', monospace;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  color: var(--md-black, #383838);
+  transition: background 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: -2px;
+}
+
+.head-to-head-tab:hover {
+  background: var(--md-snow, #F8F7F7);
+}
+
+.head-to-head-tab.active {
+  background: var(--md-sun, #FFDE00);
+  position: relative;
+  z-index: 1;
+}
+
+.head-to-head-tab.loading {
+  color: #666;
+}
+
+.tab-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--md-black, #383838);
+  border-top-color: transparent;
+  border-radius: 0;
+  animation: spin 0.8s linear infinite;
+}
+
+.head-to-head-content {
+  position: relative;
+  min-height: 200px;
+}
+
+.head-to-head-panel {
+  display: none;
+  padding: 16px 0;
+}
+
+.head-to-head-panel.active {
+  display: block;
+}
+
+.head-to-head-panel .chat-message-assistant {
+  max-width: 100%;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .chat-container {

@@ -231,6 +231,14 @@ const MODEL_OPTIONS = [
   { id: 'gemini', name: 'Gemini 3 Flash', model: 'google/gemini-3-flash-preview', appName: 'Mash', subtitle: 'Gemini-like' },
   { id: 'opus', name: 'Claude Opus 4.5', model: 'anthropic/claude-opus-4.5', appName: 'Maude', subtitle: 'Claude-like' },
   { id: 'blended', name: 'Blended (Gemini + Opus)', model: 'blended', appName: 'Quacker', subtitle: 'Best of both' },
+  { id: 'head-to-head', name: 'Head-to-Head', model: 'head-to-head', appName: 'Quacker', subtitle: 'Compare all models' },
+];
+
+// Models to run in head-to-head mode
+const HEAD_TO_HEAD_MODELS = [
+  { id: 'gemini', name: 'Gemini', model: 'google/gemini-3-flash-preview' },
+  { id: 'opus', name: 'Claude Opus', model: 'anthropic/claude-opus-4.5' },
+  { id: 'blended', name: 'Blended', model: 'blended' },
 ];
 
 export default function ChatInterface() {
@@ -241,7 +249,15 @@ export default function ChatInterface() {
   const [includeMetadata, setIncludeMetadata] = useState(true);
   const [selectedModel, setSelectedModel] = useState(MODEL_OPTIONS[0].id); // Default to Gemini
 
+  // Head-to-head mode state
+  const [headToHeadResponses, setHeadToHeadResponses] = useState<Record<string, MessageContent[]>>({});
+  const [headToHeadLoading, setHeadToHeadLoading] = useState<Record<string, boolean>>({});
+  const [headToHeadToolRunning, setHeadToHeadToolRunning] = useState<Record<string, string | null>>({});
+  const [activeTab, setActiveTab] = useState(HEAD_TO_HEAD_MODELS[0].id);
+  const headToHeadAbortControllers = useRef<Record<string, AbortController>>({});
+
   const currentModelConfig = MODEL_OPTIONS.find(m => m.id === selectedModel) || MODEL_OPTIONS[0];
+  const isHeadToHead = selectedModel === 'head-to-head';
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -320,6 +336,167 @@ export default function ChatInterface() {
     })).filter(msg => msg.content);
   };
 
+  // Helper function to run a single model stream (used in head-to-head mode)
+  const runModelStream = useCallback(async (
+    modelId: string,
+    modelName: string,
+    apiMessages: { role: string; content: string }[],
+    isMobile: boolean,
+    abortSignal: AbortSignal,
+    onUpdate: (content: MessageContent[]) => void,
+    onToolStart: (tool: string) => void,
+    onToolEnd: () => void,
+    onDone: () => void,
+    onError: (error: string) => void,
+  ) => {
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: apiMessages,
+          isMobile,
+          includeMetadata,
+          model: modelName,
+        }),
+        signal: abortSignal,
+      });
+
+      if (!response.ok) throw new Error('Failed to send message');
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      const decoder = new TextDecoder();
+      let currentContent: MessageContent[] = [];
+      let currentText = '';
+      let pendingToolName = '';
+      let isStreamingHtml = false;
+      let htmlStreamStart = -1;
+      let beforeHtmlText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+
+              if (data.type === 'text') {
+                if (pendingToolName && data.content.trim()) {
+                  const isDbTool = DATABASE_TOOLS.includes(pendingToolName);
+                  if (isDbTool && currentText.trim()) {
+                    const existingDbOpsIndex = currentContent.findIndex(
+                      c => c.type === 'tool_use' && c.toolName === 'database_ops'
+                    );
+                    if (existingDbOpsIndex >= 0) {
+                      const existingBlock = currentContent[existingDbOpsIndex];
+                      currentContent = [
+                        ...currentContent.slice(0, existingDbOpsIndex),
+                        { ...existingBlock, toolText: (existingBlock.toolText || '') + '\n\n' + currentText.trim(), isActive: true },
+                        ...currentContent.slice(existingDbOpsIndex + 1),
+                      ];
+                    } else {
+                      currentContent = [...currentContent, { type: 'tool_use', toolName: 'database_ops', toolText: currentText.trim(), isActive: true }];
+                    }
+                  }
+                  currentText = data.content;
+                  pendingToolName = '';
+                } else {
+                  currentText += data.content;
+                }
+
+                if (!isStreamingHtml) {
+                  const htmlDetection = detectHtmlStart(currentText);
+                  if (htmlDetection.hasHtml) {
+                    isStreamingHtml = true;
+                    htmlStreamStart = htmlDetection.htmlStart;
+                    beforeHtmlText = htmlDetection.beforeText;
+                  }
+                }
+
+                const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map' || c.type === 'html' || c.type === 'streaming_html');
+                if (isStreamingHtml) {
+                  const htmlChunks = currentText.slice(htmlStreamStart);
+                  const contentBlocks: MessageContent[] = [...preservedContent];
+                  if (beforeHtmlText) contentBlocks.push({ type: 'text', text: beforeHtmlText });
+                  contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: false });
+                  onUpdate(contentBlocks);
+                } else {
+                  onUpdate([...preservedContent, { type: 'text', text: currentText }]);
+                }
+              } else if (data.type === 'done') {
+                currentContent = currentContent.map(c =>
+                  c.type === 'tool_use' && c.isActive ? { ...c, isActive: false } : c
+                );
+                if (isStreamingHtml) {
+                  const htmlChunks = currentText.slice(htmlStreamStart);
+                  const preservedContent = currentContent.filter(c => c.type === 'chart' || c.type === 'tool_use' || c.type === 'map');
+                  const contentBlocks: MessageContent[] = [...preservedContent];
+                  if (beforeHtmlText) contentBlocks.push({ type: 'text', text: beforeHtmlText });
+                  contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: true });
+                  onUpdate(contentBlocks);
+                } else if (currentText) {
+                  if (isHtmlContent(currentText)) {
+                    const parts = extractHtmlParts(currentText);
+                    if (parts) {
+                      const finalBlocks: MessageContent[] = [];
+                      if (parts.beforeText) finalBlocks.push({ type: 'text', text: parts.beforeText });
+                      finalBlocks.push({ type: 'html', html: parts.html });
+                      if (parts.afterText) finalBlocks.push({ type: 'text', text: parts.afterText });
+                      onUpdate([...currentContent, ...finalBlocks]);
+                    } else {
+                      onUpdate([...currentContent, { type: 'text', text: currentText }]);
+                    }
+                  } else {
+                    onUpdate([...currentContent, { type: 'text', text: currentText }]);
+                  }
+                }
+                onDone();
+              } else if (data.type === 'tool_start') {
+                pendingToolName = data.tool;
+                onToolStart(data.tool);
+                const isDbTool = DATABASE_TOOLS.includes(data.tool);
+                if (isDbTool) {
+                  const existingDbOpsIndex = currentContent.findIndex(c => c.type === 'tool_use' && c.toolName === 'database_ops');
+                  if (existingDbOpsIndex < 0) {
+                    currentContent = [...currentContent, { type: 'tool_use', toolName: 'database_ops', toolText: '', isActive: true }];
+                  } else {
+                    currentContent = [
+                      ...currentContent.slice(0, existingDbOpsIndex),
+                      { ...currentContent[existingDbOpsIndex], isActive: true },
+                      ...currentContent.slice(existingDbOpsIndex + 1),
+                    ];
+                  }
+                }
+              } else if (data.type === 'tool_end') {
+                onToolEnd();
+              } else if (data.type === 'chart') {
+                currentContent = [...currentContent.filter(c => c.type !== 'text'), { type: 'text', text: currentText }, { type: 'chart', chart: data.spec }];
+                currentText = '';
+                onUpdate(currentContent);
+              } else if (data.type === 'map') {
+                currentContent = [...currentContent.filter(c => c.type !== 'text'), { type: 'text', text: currentText }, { type: 'map', map: data.spec }];
+                currentText = '';
+                onUpdate(currentContent);
+              } else if (data.type === 'error') {
+                onError(data.message || 'An error occurred');
+              }
+            } catch { /* Skip invalid JSON */ }
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+      onError(error instanceof Error ? error.message : 'An error occurred');
+    }
+  }, [includeMetadata]);
+
   const sendMessage = useCallback(async (messageText?: string) => {
     const text = messageText || inputValue.trim();
     if (!text || isLoading) return;
@@ -332,6 +509,45 @@ export default function ChatInterface() {
     setInputValue('');
     setIsLoading(true);
 
+    // Head-to-head mode: run all models in parallel
+    if (isHeadToHead) {
+      const isMobile = window.innerWidth <= 768;
+      const apiMessages = messagesToApiFormat(newMessages);
+
+      // Reset head-to-head state
+      setHeadToHeadResponses({});
+      setHeadToHeadLoading(Object.fromEntries(HEAD_TO_HEAD_MODELS.map(m => [m.id, true])));
+      setHeadToHeadToolRunning({});
+
+      // Create abort controllers for each model
+      HEAD_TO_HEAD_MODELS.forEach(m => {
+        headToHeadAbortControllers.current[m.id] = new AbortController();
+      });
+
+      // Run all models in parallel
+      await Promise.all(HEAD_TO_HEAD_MODELS.map(async (modelConfig) => {
+        await runModelStream(
+          modelConfig.id,
+          modelConfig.model,
+          apiMessages,
+          isMobile,
+          headToHeadAbortControllers.current[modelConfig.id].signal,
+          (content) => setHeadToHeadResponses(prev => ({ ...prev, [modelConfig.id]: content })),
+          (tool) => setHeadToHeadToolRunning(prev => ({ ...prev, [modelConfig.id]: tool })),
+          () => setHeadToHeadToolRunning(prev => ({ ...prev, [modelConfig.id]: null })),
+          () => setHeadToHeadLoading(prev => ({ ...prev, [modelConfig.id]: false })),
+          (error) => {
+            setHeadToHeadResponses(prev => ({ ...prev, [modelConfig.id]: [{ type: 'text', text: `Error: ${error}` }] }));
+            setHeadToHeadLoading(prev => ({ ...prev, [modelConfig.id]: false }));
+          },
+        );
+      }));
+
+      setIsLoading(false);
+      return;
+    }
+
+    // Standard single-model mode
     // Add placeholder for assistant response
     setMessages(prev => [...prev, { role: 'assistant', content: [] }]);
 
@@ -651,7 +867,7 @@ export default function ChatInterface() {
       setIsToolRunning(null);
       abortControllerRef.current = null;
     }
-  }, [inputValue, isLoading, messages, includeMetadata, currentModelConfig]);
+  }, [inputValue, isLoading, messages, includeMetadata, currentModelConfig, isHeadToHead, runModelStream]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -677,7 +893,7 @@ export default function ChatInterface() {
   };
 
   // Apply theme based on selected model
-  const themeClass = selectedModel === 'gemini' ? 'theme-gemini' : selectedModel === 'blended' ? 'theme-quacker' : '';
+  const themeClass = selectedModel === 'gemini' ? 'theme-gemini' : (selectedModel === 'blended' || selectedModel === 'head-to-head') ? 'theme-quacker' : '';
 
   return (
     <div className={`chat-container ${themeClass}`}>
@@ -807,7 +1023,72 @@ export default function ChatInterface() {
             );
           })
         )}
-        {isLoading && (
+        {/* Head-to-head tabbed interface */}
+        {isHeadToHead && messages.length > 0 && Object.keys(headToHeadResponses).length > 0 && (
+          <div className="head-to-head-container">
+            <div className="head-to-head-tabs">
+              {HEAD_TO_HEAD_MODELS.map((model) => (
+                <button
+                  key={model.id}
+                  className={`head-to-head-tab ${activeTab === model.id ? 'active' : ''} ${headToHeadLoading[model.id] ? 'loading' : ''}`}
+                  onClick={() => setActiveTab(model.id)}
+                >
+                  {model.name}
+                  {headToHeadLoading[model.id] && <span className="tab-spinner" />}
+                </button>
+              ))}
+            </div>
+            <div className="head-to-head-content">
+              {HEAD_TO_HEAD_MODELS.map((model) => {
+                const content = headToHeadResponses[model.id] || [];
+                const isActive = activeTab === model.id;
+                const modelLoading = headToHeadLoading[model.id];
+                const modelToolRunning = headToHeadToolRunning[model.id];
+
+                return (
+                  <div key={model.id} className={`head-to-head-panel ${isActive ? 'active' : ''}`}>
+                    <div className="chat-message chat-message-assistant">
+                      <MaxWidthContainer className="chat-message-content">
+                        {content.map((block, blockIdx) => {
+                          if (block.type === 'text' && block.text) {
+                            const displayText = filterHtmlFromText(block.text);
+                            if (!displayText) return null;
+                            return <ReactMarkdown key={blockIdx} remarkPlugins={[remarkGfm]} components={markdownComponents}>{displayText}</ReactMarkdown>;
+                          }
+                          if (block.type === 'chart' && block.chart) {
+                            return <ChatChart key={blockIdx} spec={block.chart} />;
+                          }
+                          if (block.type === 'map' && block.map) {
+                            return <ChatMap key={blockIdx} spec={block.map} />;
+                          }
+                          if (block.type === 'html' && block.html) {
+                            return <HtmlFrame key={blockIdx} html={block.html} />;
+                          }
+                          if (block.type === 'streaming_html' && block.htmlChunks) {
+                            return <StreamingHtmlFrame key={blockIdx} htmlChunks={block.htmlChunks} isComplete={block.isComplete || false} />;
+                          }
+                          if (block.type === 'tool_use' && block.toolName && (block.toolText || block.isActive)) {
+                            return <ToolUseSection key={blockIdx} toolName={block.toolName} toolText={block.toolText || ''} isActive={block.isActive} isStreaming={false} />;
+                          }
+                          return null;
+                        })}
+                        {modelLoading && content.length === 0 && (
+                          <div className="chat-loading-indicator">
+                            <span className="chat-loading-dot" />
+                            <span className="chat-loading-text">
+                              {modelToolRunning ? 'Querying data' : 'Thinking'}
+                            </span>
+                          </div>
+                        )}
+                      </MaxWidthContainer>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {isLoading && !isHeadToHead && (
           <div className="chat-loading-indicator">
             <span className="chat-loading-dot" />
             <span className="chat-loading-text">
