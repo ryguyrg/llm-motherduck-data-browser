@@ -4,6 +4,10 @@
 
 Eastlake is a fictitious B2B company that manufactures and sells products to businesses worldwide. The database contains transactional data including customers, orders, products, employees, and suppliers spanning from 2019 to 2026.
 
+## Query Tips
+
+**Important**: Don't assume all products are categorized or that similar INNER JOINs will always include all data. Some products may have NULL category_id values, and using INNER JOIN on categories will exclude these uncategorized products. Consider using LEFT JOIN when you need complete product listings.
+
 ## Database: `eastlake`
 
 ### Tables Overview
