@@ -230,6 +230,7 @@ const EXAMPLE_PROMPTS = [
 const MODEL_OPTIONS = [
   { id: 'gemini', name: 'Gemini 3 Flash', model: 'google/gemini-3-flash-preview', appName: 'Mash', subtitle: 'Gemini-like' },
   { id: 'opus', name: 'Claude Opus 4.5', model: 'anthropic/claude-opus-4.5', appName: 'Maude', subtitle: 'Claude-like' },
+  { id: 'blended', name: 'Blended (Gemini + Opus)', model: 'blended', appName: 'Quacker', subtitle: 'Best of both' },
 ];
 
 export default function ChatInterface() {
@@ -675,7 +676,8 @@ export default function ChatInterface() {
     sendMessage(example);
   };
 
-  const themeClass = selectedModel === 'gemini' ? 'theme-gemini' : '';
+  // Apply theme based on selected model
+  const themeClass = selectedModel === 'gemini' ? 'theme-gemini' : selectedModel === 'blended' ? 'theme-quacker' : '';
 
   return (
     <div className={`chat-container ${themeClass}`}>

@@ -14,6 +14,10 @@ const anthropic = new Anthropic({
 // Default model - Gemini 3 Flash Preview via OpenRouter
 const DEFAULT_MODEL = 'google/gemini-3-flash-preview';
 
+// Model IDs for blended mode
+const GEMINI_MODEL = 'google/gemini-3-flash-preview';
+const OPUS_MODEL = 'anthropic/claude-opus-4.5';
+
 // Custom tool for chart generation
 const chartTool: Tool = {
   name: 'generate_chart',
@@ -278,6 +282,64 @@ IMPORTANT: Do not end your responses with colons. Avoid phrases like "Here are t
 
 REMINDER: Your response MUST be a complete HTML page inside a \`\`\`html code block (unless "motherduck" appears in the user's message). Always generate HTML output by default.`;
 
+// System prompt for Gemini in blended mode - focused on data gathering only
+const getDataGatheringPrompt = (metadata?: string) => `You are a data analyst assistant gathering data from MotherDuck databases. Your job is to collect all the data needed to answer the user's question.
+
+${metadata ? `**DATABASE METADATA**:
+${metadata}
+
+` : ''}**IMPORTANT**: You only have access to the following databases: ${ALLOWED_DATABASES.join(', ')}
+
+Your task:
+1. Analyze the user's question and determine what data is needed
+2. Use the available tools (list_tables, list_columns, query) to gather ALL relevant data
+3. Run multiple queries if needed to get comprehensive data
+4. After gathering data, provide a clear summary of what you found
+
+DO NOT generate any HTML or visualizations. Just gather the data and summarize your findings in plain text.
+
+Format your final summary as:
+**Data Summary:**
+- Describe what data was collected
+- Include key statistics and findings
+- Note any relevant patterns or insights
+
+**Raw Data:**
+Include the actual query results that will be used for visualization.`;
+
+// System prompt for Opus in blended mode - focused on HTML generation from provided data
+const getReportGenerationPrompt = (isMobile: boolean) => `You are an expert data visualization specialist. You have been provided with data that was gathered by another assistant. Your job is to create a beautiful, insightful HTML report from this data.
+
+${isMobile ? `**MOBILE LAYOUT**: Generate reports with a single-column layout optimized for narrow screens (max-width: 400px).
+
+` : ''}Generate a complete HTML page following the Tufte style guide:
+
+TUFTE STYLE GUIDE FOR HTML GENERATION:
+
+Core Philosophy:
+1. Maximize data-ink ratio — Every pixel should convey information.
+2. Small multiples — Use consistent visual encoding across repeated elements.
+3. Integrate text and data — Weave narrative prose with inline statistics.
+4. High information density — Pack maximum insight into minimum space.
+
+Typography:
+- Use Google Fonts: Source Sans Pro for numbers, system serif (Palatino, Georgia) for text
+- Big numbers: 42px, letter-spacing: -1px
+- Section headers: 11px uppercase, letter-spacing: 1.5px
+
+Color Palette:
+- Background: #fffff8 (warm cream)
+- Text: #111 (primary), #666 (secondary), #999 (tertiary)
+- Accent: #a00 (burgundy - use sparingly)
+
+Components to use:
+- Big numbers with small labels for KPIs
+- Inline bar charts in tables (div with percentage width)
+- SVG sparklines with area fill
+- Tables with right-aligned numeric columns
+
+Return ONLY the complete HTML page inside a \`\`\`html code block. Include insightful analysis woven into the visualization.`;
+
 // Check if a database reference is allowed
 function isDatabaseAllowed(dbName: string): boolean {
   const normalized = dbName.toLowerCase().trim();
@@ -376,6 +438,11 @@ export async function POST(request: NextRequest) {
     // Filter out list_databases tool and combine with our custom chart tool
     const filteredMcpTools = mcpTools.filter(tool => tool.name !== 'list_databases');
     const tools: Tool[] = [...filteredMcpTools, chartTool, mapTool];
+    // For blended mode data gathering, only use database tools (no chart/map generation)
+    const dataGatheringTools: Tool[] = [...filteredMcpTools];
+
+    // Check if we're in blended mode
+    const isBlendedMode = selectedModel === 'blended';
 
     // Create streaming response
     const encoder = new TextEncoder();
@@ -384,6 +451,186 @@ export async function POST(request: NextRequest) {
       async start(controller) {
         try {
           let anthropicMessages = convertToAnthropicMessages(messages);
+
+          // ========== BLENDED MODE ==========
+          if (isBlendedMode) {
+            console.log('[Chat API] Starting BLENDED mode - Phase 1: Gemini data gathering');
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'text', content: 'Gathering data with Gemini...\n\n' })}\n\n`));
+
+            // Phase 1: Gemini gathers data
+            let geminiMessages = convertToAnthropicMessages(messages);
+            let collectedData = '';
+            let continueGathering = true;
+            let gatherIteration = 0;
+
+            while (continueGathering) {
+              gatherIteration++;
+              console.log(`[Chat API] Blended Phase 1 - Iteration ${gatherIteration}`);
+
+              const geminiResponse = await anthropic.messages.create({
+                model: GEMINI_MODEL,
+                max_tokens: 8192,
+                system: getDataGatheringPrompt(metadata),
+                tools: dataGatheringTools,
+                messages: geminiMessages,
+                stream: true,
+              });
+
+              const assistantContentBlocks: ContentBlock[] = [];
+              let currentToolUse: { id: string; name: string; input: string } | null = null;
+              let currentTextContent = '';
+              let hasToolUse = false;
+
+              for await (const event of geminiResponse) {
+                if (event.type === 'content_block_start') {
+                  if (event.content_block.type === 'tool_use') {
+                    if (currentTextContent) {
+                      assistantContentBlocks.push({ type: 'text', text: currentTextContent, citations: [] });
+                      currentTextContent = '';
+                    }
+                    currentToolUse = {
+                      id: event.content_block.id,
+                      name: event.content_block.name,
+                      input: '',
+                    };
+                    hasToolUse = true;
+                  }
+                } else if (event.type === 'content_block_delta') {
+                  if (event.delta.type === 'text_delta') {
+                    currentTextContent += event.delta.text;
+                  } else if (event.delta.type === 'input_json_delta' && currentToolUse) {
+                    currentToolUse.input += event.delta.partial_json;
+                  }
+                } else if (event.type === 'content_block_stop') {
+                  if (currentToolUse) {
+                    let parsedInput = {};
+                    try {
+                      parsedInput = JSON.parse(currentToolUse.input || '{}');
+                    } catch {
+                      parsedInput = {};
+                    }
+                    assistantContentBlocks.push({
+                      type: 'tool_use',
+                      id: currentToolUse.id,
+                      name: currentToolUse.name,
+                      input: parsedInput,
+                    });
+                    currentToolUse = null;
+                  } else if (currentTextContent) {
+                    assistantContentBlocks.push({ type: 'text', text: currentTextContent, citations: [] });
+                  }
+                }
+              }
+
+              // Capture final text from Gemini
+              if (currentTextContent) {
+                collectedData += currentTextContent + '\n';
+              }
+
+              if (hasToolUse) {
+                const toolUseBlocks = assistantContentBlocks.filter(block => block.type === 'tool_use');
+
+                // Send tool_start events to show progress
+                for (const block of toolUseBlocks) {
+                  if (block.type === 'tool_use') {
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_start', tool: block.name })}\n\n`));
+                  }
+                }
+
+                // Execute tools in parallel
+                const toolResultPromises = toolUseBlocks.map(async (block) => {
+                  if (block.type !== 'tool_use') return null;
+
+                  const validation = validateToolAccess(block.name, block.input as Record<string, unknown>);
+                  if (!validation.allowed) {
+                    return {
+                      type: 'tool_result' as const,
+                      tool_use_id: block.id,
+                      content: validation.message || 'Access denied',
+                      is_error: true,
+                    };
+                  }
+
+                  try {
+                    const toolResult = await executeTool(mcpClient!, block.name, block.input as Record<string, unknown>);
+                    // Collect tool results for passing to Opus
+                    collectedData += `\n**Tool: ${block.name}**\nInput: ${JSON.stringify(block.input)}\nResult: ${toolResult}\n`;
+                    return {
+                      type: 'tool_result' as const,
+                      tool_use_id: block.id,
+                      content: toolResult,
+                    };
+                  } catch (error) {
+                    return {
+                      type: 'tool_result' as const,
+                      tool_use_id: block.id,
+                      content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                      is_error: true,
+                    };
+                  }
+                });
+
+                const toolResults = (await Promise.all(toolResultPromises)).filter((r): r is ToolResultBlockParam => r !== null);
+
+                // Send tool_end events
+                for (const block of toolUseBlocks) {
+                  if (block.type === 'tool_use') {
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_end', tool: block.name })}\n\n`));
+                  }
+                }
+
+                geminiMessages = [
+                  ...geminiMessages,
+                  { role: 'assistant', content: assistantContentBlocks },
+                  { role: 'user', content: toolResults },
+                ];
+              } else {
+                continueGathering = false;
+              }
+            }
+
+            console.log('[Chat API] Blended Phase 1 complete. Data collected:', collectedData.length, 'chars');
+            console.log('[Chat API] Starting BLENDED mode - Phase 2: Opus report generation');
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'text', content: '\nGenerating report with Claude Opus...\n\n' })}\n\n`));
+
+            // Phase 2: Opus generates the report
+            const userQuestion = messages[messages.length - 1]?.content || '';
+            const opusMessages: MessageParam[] = [
+              {
+                role: 'user',
+                content: `**User's Question:** ${userQuestion}
+
+**Collected Data:**
+${collectedData}
+
+Please create a comprehensive HTML visualization report based on this data.`,
+              },
+            ];
+
+            const opusResponse = await anthropic.messages.create({
+              model: OPUS_MODEL,
+              max_tokens: 16384,
+              system: getReportGenerationPrompt(isMobile),
+              messages: opusMessages,
+              stream: true,
+            });
+
+            // Stream Opus's response to the user
+            for await (const event of opusResponse) {
+              if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'text', content: event.delta.text })}\n\n`));
+              }
+            }
+
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
+            controller.close();
+            if (mcpClient) {
+              await closeMcpClient(mcpClient);
+            }
+            return;
+          }
+
+          // ========== STANDARD MODE (non-blended) ==========
 
           // Loop to handle tool use
           let continueLoop = true;

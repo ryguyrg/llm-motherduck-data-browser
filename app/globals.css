@@ -892,6 +892,190 @@ body:has(.theme-gemini) {
   border-left-color: var(--accent-blue);
 }
 
+/* Quacker Theme (MotherDuck Brand) */
+@import url('https://fonts.googleapis.com/css2?family=Cousine:wght@400;700&family=Inter:wght@400;500;600&display=swap');
+
+.theme-quacker {
+  --md-snow: #F8F7F7;
+  --md-sand: #F4EFEA;
+  --md-black: #383838;
+  --md-sky: #6FC2FF;
+  --md-garden: #16AA98;
+  --md-sun: #FFDE00;
+  --md-watermelon: #FF7169;
+}
+
+.theme-quacker,
+.theme-quacker button,
+.theme-quacker input,
+.theme-quacker select {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.theme-quacker .chat-title,
+.theme-quacker .section-title,
+.theme-quacker h1, .theme-quacker h2, .theme-quacker h3 {
+  font-family: 'Cousine', monospace;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.theme-quacker.chat-container {
+  background: var(--md-snow);
+  border: 2px solid var(--md-black);
+  border-radius: 0;
+}
+
+.theme-quacker .chat-header {
+  background: var(--md-black);
+  color: white;
+  border-bottom: 2px solid var(--md-black);
+  border-radius: 0;
+}
+
+.theme-quacker .chat-title {
+  color: white;
+  font-size: 24px;
+}
+
+.theme-quacker .chat-subtitle {
+  color: #aaa;
+  font-family: 'Inter', sans-serif;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.theme-quacker .chat-clear {
+  background: transparent;
+  color: white;
+  border: 2px solid white;
+  border-radius: 0;
+}
+
+.theme-quacker .chat-clear:hover {
+  background: white;
+  color: var(--md-black);
+}
+
+.theme-quacker .chat-messages {
+  background: var(--md-snow);
+}
+
+.theme-quacker .chat-welcome {
+  color: var(--md-black);
+}
+
+.theme-quacker .chat-welcome h2 {
+  color: var(--md-black);
+  font-family: 'Cousine', monospace;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.theme-quacker .chat-example {
+  background: var(--md-sand);
+  border: 2px solid var(--md-black);
+  border-radius: 0;
+  color: var(--md-black);
+}
+
+.theme-quacker .chat-example:hover {
+  background: var(--md-sun);
+  border-color: var(--md-black);
+}
+
+.theme-quacker .metadata-toggle input:checked + .toggle-slider {
+  background: var(--md-sky);
+}
+
+.theme-quacker .toggle-slider {
+  border-radius: 0;
+}
+
+.theme-quacker .toggle-slider::after {
+  border-radius: 0;
+}
+
+.theme-quacker .model-dropdown {
+  background: var(--md-sand);
+  border: 2px solid var(--md-black);
+  border-radius: 0;
+  color: var(--md-black);
+}
+
+.theme-quacker .model-dropdown:hover,
+.theme-quacker .model-dropdown:focus {
+  border-color: var(--md-black);
+  background: var(--md-sun);
+}
+
+.theme-quacker .chat-message-user .chat-message-content {
+  background: var(--md-sun);
+  color: var(--md-black);
+  border: 2px solid var(--md-black);
+  border-radius: 0;
+}
+
+.theme-quacker .chat-input-area {
+  background: var(--md-snow);
+  border-top: 2px solid var(--md-black);
+}
+
+.theme-quacker .chat-input {
+  background: white;
+  border: 2px solid var(--md-black);
+  border-radius: 0;
+  color: var(--md-black);
+}
+
+.theme-quacker .chat-input:focus {
+  border-color: var(--md-black);
+  box-shadow: none;
+  outline: 2px solid var(--md-sky);
+  outline-offset: 2px;
+}
+
+.theme-quacker .chat-input::placeholder {
+  color: #999;
+}
+
+.theme-quacker .chat-send {
+  background: var(--md-sky);
+  color: var(--md-black);
+  border: 2px solid var(--md-black);
+  border-radius: 0;
+}
+
+.theme-quacker .chat-send:hover:not(:disabled) {
+  background: var(--md-sun);
+}
+
+.theme-quacker .chat-send:disabled {
+  background: #e0e0e0;
+  color: #999;
+  border-color: #999;
+}
+
+.theme-quacker .chat-loading-dot {
+  background: var(--md-sky);
+  border-radius: 0;
+}
+
+.theme-quacker .tool-use-active {
+  border-left-color: var(--md-sky);
+}
+
+.theme-quacker .tool-use-spinner {
+  border-color: var(--md-black);
+  border-top-color: var(--md-sky);
+  border-radius: 0;
+}
+
+/* Override body background for Quacker theme */
+body:has(.theme-quacker) {
+  background: var(--md-sand);
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .chat-container {
