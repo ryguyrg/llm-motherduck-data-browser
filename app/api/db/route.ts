@@ -1,27 +1,60 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { readOnlyQuery, healthCheck } from '@/lib/planetscale';
+import { query, readOnlyQuery, healthCheck } from '@/lib/planetscale';
+
+// Pre-defined queries - only these can be executed via the API
+// isWrite: true allows INSERT/UPDATE/DELETE for this specific query
+const ALLOWED_QUERIES: Record<string, { sql: string; description: string; isWrite?: boolean }> = {
+  // Share-related queries
+  'save_share': {
+    sql: `INSERT INTO shares (id, html_content, created_at, expires_at)
+          VALUES ($1, $2, NOW(), NOW() + INTERVAL '30 days')
+          RETURNING id, created_at, expires_at`,
+    description: 'Save shared HTML content',
+    isWrite: true,
+  },
+  'get_share': {
+    sql: `SELECT id, html_content, created_at, expires_at
+          FROM shares
+          WHERE id = $1 AND expires_at > NOW()`,
+    description: 'Retrieve shared HTML content by ID',
+  },
+  'delete_expired_shares': {
+    sql: `DELETE FROM shares WHERE expires_at < NOW()`,
+    description: 'Clean up expired shares',
+    isWrite: true,
+  },
+};
 
 interface QueryRequest {
-  sql: string;
+  queryName: string;
   params?: unknown[];
-  timeout?: number;
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: QueryRequest = await request.json();
-    const { sql, params, timeout } = body;
+    const { queryName, params } = body;
 
-    if (!sql || typeof sql !== 'string') {
+    if (!queryName || typeof queryName !== 'string') {
       return NextResponse.json(
-        { error: 'SQL query is required' },
+        { error: 'queryName is required' },
         { status: 400 }
       );
     }
 
-    console.log('[DB API] Executing query:', sql.slice(0, 100) + (sql.length > 100 ? '...' : ''));
+    const queryDef = ALLOWED_QUERIES[queryName];
+    if (!queryDef) {
+      return NextResponse.json(
+        { error: `Unknown query: ${queryName}. Allowed queries: ${Object.keys(ALLOWED_QUERIES).join(', ')}` },
+        { status: 400 }
+      );
+    }
 
-    const result = await readOnlyQuery(sql, params, { timeout });
+    console.log(`[DB API] Executing pre-defined query: ${queryName}`);
+
+    // Use the appropriate query function based on whether this is a write operation
+    const queryFn = queryDef.isWrite ? query : readOnlyQuery;
+    const result = await queryFn(queryDef.sql, params);
 
     return NextResponse.json({
       success: true,

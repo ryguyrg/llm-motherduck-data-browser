@@ -408,6 +408,7 @@ interface MessageContent {
   html?: string;
   htmlChunks?: string;  // For streaming HTML
   isComplete?: boolean; // For streaming HTML completion state
+  contentId?: string;   // Server-side content ID for sharing
   toolName?: string;
   toolText?: string;
   isActive?: boolean;
@@ -723,6 +724,7 @@ export default function ChatInterface() {
       let htmlStreamStart = -1;
       let beforeHtmlText = '';
       let hadToolUses = false; // Track if there were actual database tool uses
+      let savedContentId = ''; // Server-side content ID for sharing HTML
 
       while (true) {
         const { done, value } = await reader.read();
@@ -822,7 +824,7 @@ export default function ChatInterface() {
                     });
                   }
                   contentBlocks.push(...otherContent);
-                  contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: true });
+                  contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: true, contentId: savedContentId || undefined });
                   onUpdate(contentBlocks);
                 } else if (currentText) {
                   if (isHtmlContent(currentText)) {
@@ -841,7 +843,7 @@ export default function ChatInterface() {
                         });
                       }
                       finalBlocks.push(...getVisualizations(currentContent));
-                      finalBlocks.push({ type: 'html', html: parts.html });
+                      finalBlocks.push({ type: 'html', html: parts.html, contentId: savedContentId || undefined });
                       if (parts.afterText) finalBlocks.push({ type: 'text', text: parts.afterText });
                       onUpdate(finalBlocks);
                     } else {
@@ -876,6 +878,16 @@ export default function ChatInterface() {
                   onUpdate(currentContent.map(c => c.type === 'tool_use' ? { ...c, isActive: false } : c));
                 }
                 onDone();
+              } else if (data.type === 'content_saved') {
+                // Server saved HTML content - store the ID for sharing
+                savedContentId = data.contentId;
+                console.log(`[${modelId}] Content saved with ID:`, savedContentId);
+                // Update any existing html/streaming_html blocks with the contentId
+                currentContent = currentContent.map(c =>
+                  (c.type === 'html' || c.type === 'streaming_html')
+                    ? { ...c, contentId: savedContentId }
+                    : c
+                );
               } else if (data.type === 'tool_start') {
                 pendingToolName = data.tool;
                 onToolStart(data.tool);
@@ -1389,10 +1401,10 @@ export default function ChatInterface() {
                 return <ChatMap key={blockKey} spec={block.map} />;
               }
               if (block.type === 'html' && block.html) {
-                return <HtmlFrame key={blockKey} html={block.html} />;
+                return <HtmlFrame key={blockKey} html={block.html} contentId={block.contentId} />;
               }
               if (block.type === 'streaming_html' && block.htmlChunks) {
-                return <StreamingHtmlFrame key={blockKey} htmlChunks={block.htmlChunks} isComplete={block.isComplete || false} />;
+                return <StreamingHtmlFrame key={blockKey} htmlChunks={block.htmlChunks} isComplete={block.isComplete || false} contentId={block.contentId} />;
               }
               if (block.type === 'tool_use' && block.toolName) {
                 return <ToolUseSection key={blockKey} toolName={block.toolName} toolText={block.toolText || ''} isActive={block.isActive} isStreaming={isStreamingHtml} keyPrefix={blockKey} expansionState={expansionStates.current} onToggleExpansion={toggleExpansion} />;

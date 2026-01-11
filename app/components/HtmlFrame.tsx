@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 interface HtmlFrameProps {
   html: string;
   title?: string;
+  contentId?: string;  // Server-side content ID for sharing
 }
 
 // Streaming HTML Frame - renders HTML progressively as chunks arrive
@@ -12,6 +13,7 @@ interface StreamingHtmlFrameProps {
   htmlChunks: string;
   isComplete: boolean;
   title?: string;
+  contentId?: string;  // Server-side content ID for sharing
 }
 
 // Simple hash function to detect different documents
@@ -26,7 +28,7 @@ function simpleHash(str: string): number {
   return hash;
 }
 
-export function StreamingHtmlFrame({ htmlChunks, isComplete, title }: StreamingHtmlFrameProps) {
+export function StreamingHtmlFrame({ htmlChunks, isComplete, title, contentId }: StreamingHtmlFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(450);
   const [isVisible, setIsVisible] = useState(false);
@@ -181,14 +183,31 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title }: StreamingH
     }
   }, [isComplete]);
 
-  const handleShare = () => {
-    // TODO: Implement share actions
-    console.log('Share clicked - streaming frame');
+  const handleShare = async () => {
+    if (!contentId) {
+      alert('Share not available - content was not saved');
+      return;
+    }
+
+    const shareUrl = `${window.location.origin}/share/${contentId}`;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      alert('Share link copied to clipboard!');
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      // Fallback: show the URL in a prompt
+      prompt('Copy this share link:', shareUrl);
+    }
   };
 
   return (
     <div className="html-frame" style={{ display: isVisible ? 'block' : 'none' }}>
-      <button className="html-frame-share" onClick={handleShare} title="Share">
+      <button
+        className="html-frame-share"
+        onClick={handleShare}
+        title={contentId ? "Share" : "Share not available"}
+        disabled={!contentId}
+      >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="18" cy="5" r="3"></circle>
           <circle cx="6" cy="12" r="3"></circle>
@@ -214,7 +233,7 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title }: StreamingH
   );
 }
 
-export default function HtmlFrame({ html, title }: HtmlFrameProps) {
+export default function HtmlFrame({ html, title, contentId }: HtmlFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(450);
 
@@ -264,14 +283,31 @@ export default function HtmlFrame({ html, title }: HtmlFrameProps) {
   // Ensure HTML has proper structure
   const fullHtml = html.toLowerCase().includes('<html') ? html : `<!DOCTYPE html><html><body>${html}</body></html>`;
 
-  const handleShare = () => {
-    // TODO: Implement share actions
-    console.log('Share clicked', { html: fullHtml });
+  const handleShare = async () => {
+    if (!contentId) {
+      alert('Share not available - content was not saved');
+      return;
+    }
+
+    const shareUrl = `${window.location.origin}/share/${contentId}`;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      alert('Share link copied to clipboard!');
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      // Fallback: show the URL in a prompt
+      prompt('Copy this share link:', shareUrl);
+    }
   };
 
   return (
     <div className="html-frame">
-      <button className="html-frame-share" onClick={handleShare} title="Share">
+      <button
+        className="html-frame-share"
+        onClick={handleShare}
+        title={contentId ? "Share" : "Share not available"}
+        disabled={!contentId}
+      >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="18" cy="5" r="3"></circle>
           <circle cx="6" cy="12" r="3"></circle>

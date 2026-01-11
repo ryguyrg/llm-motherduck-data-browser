@@ -4,6 +4,98 @@ import { createMcpClient, getToolsForClaude, executeTool, closeMcpClient } from 
 import type { MessageParam, ToolResultBlockParam, ContentBlock, Tool } from '@anthropic-ai/sdk/resources/messages';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { query } from '@/lib/planetscale';
+
+// Generate a random ID for content storage
+function generateContentId(length: number = 64): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  const randomValues = new Uint8Array(length);
+  crypto.getRandomValues(randomValues);
+  for (let i = 0; i < length; i++) {
+    result += chars[randomValues[i] % chars.length];
+  }
+  return result;
+}
+
+// Detect if text contains HTML content
+function containsHtml(text: string): boolean {
+  const trimmed = text.trim();
+  const lowerTrimmed = trimmed.toLowerCase();
+
+  // Check for HTML document markers
+  if (lowerTrimmed.startsWith('<!doctype html')) return true;
+  if (lowerTrimmed.startsWith('<html')) return true;
+
+  // Check for markdown code block with html
+  const htmlCodeBlockMatch = trimmed.match(/```html\s*([\s\S]*?)\n```/) || trimmed.match(/```html\s*([\s\S]*)```$/);
+  if (htmlCodeBlockMatch) {
+    const htmlContent = htmlCodeBlockMatch[1].trim().toLowerCase();
+    if (htmlContent.startsWith('<!doctype html') || htmlContent.startsWith('<html')) {
+      return true;
+    }
+  }
+
+  // Check for raw HTML in text
+  if (lowerTrimmed.includes('<!doctype html') && lowerTrimmed.includes('</html>')) {
+    return true;
+  }
+  if (lowerTrimmed.includes('<html') && lowerTrimmed.includes('</html>')) {
+    return true;
+  }
+
+  return false;
+}
+
+// Extract HTML content from text (handles markdown code blocks)
+function extractHtmlContent(text: string): string | null {
+  const trimmed = text.trim();
+
+  // Check for markdown HTML code block
+  const htmlCodeBlockMatch = trimmed.match(/```html\s*([\s\S]*?)\n```/) || trimmed.match(/```html\s*([\s\S]*)```$/);
+  if (htmlCodeBlockMatch) {
+    const htmlContent = htmlCodeBlockMatch[1].trim();
+    const htmlLower = htmlContent.toLowerCase();
+    if (htmlLower.startsWith('<!doctype html') || htmlLower.startsWith('<html')) {
+      return htmlContent;
+    }
+  }
+
+  // Check for direct HTML
+  const lowerTrimmed = trimmed.toLowerCase();
+  if (lowerTrimmed.startsWith('<!doctype html') || lowerTrimmed.startsWith('<html')) {
+    return trimmed;
+  }
+
+  // Extract raw HTML from text
+  const rawHtmlMatch = trimmed.match(/(<!DOCTYPE html[\s\S]*<\/html>)/i);
+  if (rawHtmlMatch) {
+    return rawHtmlMatch[1].trim();
+  }
+
+  const rawHtmlMatch2 = trimmed.match(/(<html[\s\S]*<\/html>)/i);
+  if (rawHtmlMatch2) {
+    return rawHtmlMatch2[1].trim();
+  }
+
+  return null;
+}
+
+// Save HTML content to database and return ID
+async function saveHtmlContent(html: string): Promise<string | null> {
+  try {
+    const id = generateContentId();
+    await query(
+      `INSERT INTO shares (id, html_content, created_at, expires_at)
+       VALUES ($1, $2, NOW(), NOW() + INTERVAL '30 days')`,
+      [id, html]
+    );
+    return id;
+  } catch (error) {
+    console.error('[Chat API] Failed to save HTML content:', error);
+    return null;
+  }
+}
 
 // Create a new Anthropic client for each request to avoid stream conflicts
 function createAnthropicClient() {
@@ -694,8 +786,11 @@ Please create a comprehensive HTML visualization report based on this data.`,
             let opusRetryCount = 0;
             let opusSuccess = false;
 
+            let opusFullResponse = '';
+
             while (!opusSuccess && opusRetryCount <= MAX_RETRIES) {
               try {
+                opusFullResponse = ''; // Reset on retry
                 const opusResponse = await anthropic.messages.create({
                   model: OPUS_MODEL,
                   max_tokens: 16384,
@@ -707,6 +802,7 @@ Please create a comprehensive HTML visualization report based on this data.`,
                 // Stream Opus's response to the user
                 for await (const event of opusResponse) {
                   if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+                    opusFullResponse += event.delta.text;
                     send({ type: 'text', content: event.delta.text });
                   }
                 }
@@ -731,6 +827,18 @@ Please create a comprehensive HTML visualization report based on this data.`,
                   await closeMcpClient(mcpClient);
                 }
                 return;
+              }
+            }
+
+            // Check for HTML content and save it
+            if (containsHtml(opusFullResponse)) {
+              const htmlContent = extractHtmlContent(opusFullResponse);
+              if (htmlContent) {
+                const contentId = await saveHtmlContent(htmlContent);
+                if (contentId) {
+                  send({ type: 'content_saved', contentId });
+                  console.log('[Chat API] Blended mode: Saved HTML content with ID:', contentId);
+                }
               }
             }
 
@@ -951,6 +1059,17 @@ Please create a comprehensive HTML visualization report based on this data.`,
                 { role: 'user', content: toolResults },
               ];
             } else {
+              // No more tool use - check for HTML content and save it
+              if (containsHtml(fullResponseText)) {
+                const htmlContent = extractHtmlContent(fullResponseText);
+                if (htmlContent) {
+                  const contentId = await saveHtmlContent(htmlContent);
+                  if (contentId) {
+                    send({ type: 'content_saved', contentId });
+                    console.log('[Chat API] Saved HTML content with ID:', contentId);
+                  }
+                }
+              }
               continueLoop = false;
             }
           }
