@@ -81,14 +81,61 @@ function extractHtmlContent(text: string): string | null {
   return null;
 }
 
+// Metadata to include in saved HTML
+interface HtmlMetadata {
+  question: string;
+  sqlQueries: Array<{ sql: string; result?: string }>;
+  intermediateOutput: string[];
+  model: string;
+  timestamp: string;
+}
+
+// Escape HTML comment content to prevent breaking out of comments
+function escapeHtmlComment(text: string): string {
+  return text.replace(/-->/g, '--&gt;').replace(/<!--/g, '&lt;!--');
+}
+
+// Inject metadata as HTML comments into the HTML content
+function injectMetadataComments(html: string, metadata: HtmlMetadata): string {
+  const metadataComment = `
+<!--
+=== REPORT METADATA ===
+Generated: ${metadata.timestamp}
+Model: ${metadata.model}
+
+=== USER QUESTION ===
+${escapeHtmlComment(metadata.question)}
+
+=== SQL QUERIES ===
+${metadata.sqlQueries.map((q, i) => `
+--- Query ${i + 1} ---
+${escapeHtmlComment(q.sql)}
+${q.result ? `\n--- Result ${i + 1} ---\n${escapeHtmlComment(q.result.slice(0, 2000))}${q.result.length > 2000 ? '\n... (truncated)' : ''}` : ''}`).join('\n')}
+
+=== INTERMEDIATE OUTPUT ===
+${metadata.intermediateOutput.map(o => escapeHtmlComment(o)).join('\n\n')}
+
+=== END METADATA ===
+-->
+`;
+
+  // Insert after <!DOCTYPE html> or at the very beginning
+  const doctypeMatch = html.match(/^(<!DOCTYPE[^>]*>)/i);
+  if (doctypeMatch) {
+    return doctypeMatch[1] + metadataComment + html.slice(doctypeMatch[1].length);
+  }
+  return metadataComment + html;
+}
+
 // Save HTML content to database and return ID
-async function saveHtmlContent(html: string): Promise<string | null> {
+async function saveHtmlContent(html: string, metadata?: HtmlMetadata): Promise<string | null> {
   try {
     const id = generateContentId();
+    const htmlWithMetadata = metadata ? injectMetadataComments(html, metadata) : html;
     await query(
       `INSERT INTO shares (id, html_content, created_at, expires_at)
        VALUES ($1, $2, NOW(), NOW() + INTERVAL '30 days')`,
-      [id, html]
+      [id, htmlWithMetadata]
     );
     return id;
   } catch (error) {
@@ -608,6 +655,11 @@ export async function POST(request: NextRequest) {
             let geminiRetryCount = 0;
             let geminiNeedsRetry = false;
 
+            // Metadata tracking for saved HTML (blended mode)
+            const blendedUserQuestion = messages[messages.length - 1]?.content || '';
+            const blendedSqlQueries: Array<{ sql: string; result?: string }> = [];
+            const blendedIntermediateOutput: string[] = [];
+
             while (continueGathering) {
               geminiNeedsRetry = false;
               gatherIteration++;
@@ -696,9 +748,12 @@ export async function POST(request: NextRequest) {
                 continue;
               }
 
-              // Capture final text from Gemini
-              if (currentTextContent) {
-                collectedData += currentTextContent + '\n';
+              // Capture all text from Gemini (including text before tool calls)
+              for (const block of assistantContentBlocks) {
+                if (block.type === 'text' && block.text) {
+                  collectedData += block.text + '\n';
+                  blendedIntermediateOutput.push(block.text);
+                }
               }
 
               if (hasToolUse) {
@@ -728,9 +783,15 @@ export async function POST(request: NextRequest) {
                   }
 
                   try {
-                    const toolResult = await executeTool(mcpClient!, block.name, block.input as Record<string, unknown>);
+                    const input = block.input as Record<string, unknown>;
+                    const sql = input?.sql as string | undefined;
+                    const toolResult = await executeTool(mcpClient!, block.name, input);
                     // Collect tool results for passing to Opus
                     collectedData += `\n**Tool: ${block.name}**\nInput: ${JSON.stringify(block.input)}\nResult: ${toolResult}\n`;
+                    // Track SQL queries for metadata (blended mode)
+                    if (sql && block.name === 'query') {
+                      blendedSqlQueries.push({ sql, result: toolResult });
+                    }
                     return {
                       type: 'tool_result' as const,
                       tool_use_id: block.id,
@@ -834,7 +895,14 @@ Please create a comprehensive HTML visualization report based on this data.`,
             if (containsHtml(opusFullResponse)) {
               const htmlContent = extractHtmlContent(opusFullResponse);
               if (htmlContent) {
-                const contentId = await saveHtmlContent(htmlContent);
+                const htmlMetadata: HtmlMetadata = {
+                  question: blendedUserQuestion,
+                  sqlQueries: blendedSqlQueries,
+                  intermediateOutput: blendedIntermediateOutput,
+                  model: 'blended (Gemini + Opus)',
+                  timestamp: new Date().toISOString(),
+                };
+                const contentId = await saveHtmlContent(htmlContent, htmlMetadata);
                 if (contentId) {
                   send({ type: 'content_saved', contentId });
                   console.log('[Chat API] Blended mode: Saved HTML content with ID:', contentId);
@@ -858,6 +926,11 @@ Please create a comprehensive HTML visualization report based on this data.`,
           let loopIteration = 0;
           let retryCount = 0;
           let needsRetry = false;
+
+          // Metadata tracking for saved HTML
+          const userQuestion = messages[messages.length - 1]?.content || '';
+          const sqlQueries: Array<{ sql: string; result?: string }> = [];
+          const intermediateOutput: string[] = [];
 
           while (continueLoop) {
             needsRetry = false;
@@ -1014,7 +1087,8 @@ Please create a comprehensive HTML visualization report based on this data.`,
                     };
                   } else {
                     // Validate database access before executing tool
-                    const validation = validateToolAccess(block.name, block.input as Record<string, unknown>);
+                    const input = block.input as Record<string, unknown>;
+                    const validation = validateToolAccess(block.name, input);
                     if (!validation.allowed) {
                       return {
                         type: 'tool_result' as const,
@@ -1024,7 +1098,12 @@ Please create a comprehensive HTML visualization report based on this data.`,
                       };
                     }
 
-                    const toolResult = await executeTool(mcpClient!, block.name, block.input as Record<string, unknown>);
+                    const sql = input?.sql as string | undefined;
+                    const toolResult = await executeTool(mcpClient!, block.name, input);
+                    // Track SQL queries for metadata
+                    if (sql && block.name === 'query') {
+                      sqlQueries.push({ sql, result: toolResult });
+                    }
                     return {
                       type: 'tool_result' as const,
                       tool_use_id: block.id,
@@ -1052,6 +1131,11 @@ Please create a comprehensive HTML visualization report based on this data.`,
                 }
               }
 
+              // Capture intermediate text output before continuing
+              if (fullResponseText.trim()) {
+                intermediateOutput.push(fullResponseText);
+              }
+
               // Continue conversation with assistant's tool_use and user's tool_result
               anthropicMessages = [
                 ...anthropicMessages,
@@ -1063,7 +1147,14 @@ Please create a comprehensive HTML visualization report based on this data.`,
               if (containsHtml(fullResponseText)) {
                 const htmlContent = extractHtmlContent(fullResponseText);
                 if (htmlContent) {
-                  const contentId = await saveHtmlContent(htmlContent);
+                  const htmlMetadata: HtmlMetadata = {
+                    question: userQuestion,
+                    sqlQueries,
+                    intermediateOutput,
+                    model: selectedModel,
+                    timestamp: new Date().toISOString(),
+                  };
+                  const contentId = await saveHtmlContent(htmlContent, htmlMetadata);
                   if (contentId) {
                     send({ type: 'content_saved', contentId });
                     console.log('[Chat API] Saved HTML content with ID:', contentId);

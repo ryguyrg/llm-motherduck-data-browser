@@ -16,6 +16,83 @@ interface StreamingHtmlFrameProps {
   contentId?: string;  // Server-side content ID for sharing
 }
 
+// Share Popup Component
+interface SharePopupProps {
+  url: string;
+  onClose: () => void;
+}
+
+function SharePopup({ url, onClose }: SharePopupProps) {
+  const [copied, setCopied] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // Select the URL text on mount
+    inputRef.current?.select();
+  }, []);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback: select the text for manual copy
+      inputRef.current?.select();
+    }
+  };
+
+  const handleBackdropClick = (e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  return (
+    <div className="share-popup-backdrop" onClick={handleBackdropClick}>
+      <div className="share-popup">
+        <div className="share-popup-header">
+          <span className="share-popup-title">Share Link</span>
+          <button className="share-popup-close" onClick={onClose} aria-label="Close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div className="share-popup-content">
+          <input
+            ref={inputRef}
+            type="text"
+            value={url}
+            readOnly
+            className="share-popup-input"
+            onClick={(e) => (e.target as HTMLInputElement).select()}
+          />
+          <button className="share-popup-copy" onClick={handleCopy}>
+            {copied ? (
+              <>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                Copied!
+              </>
+            ) : (
+              <>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+                Copy
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Simple hash function to detect different documents
 function simpleHash(str: string): number {
   let hash = 0;
@@ -183,25 +260,20 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title, contentId }:
     }
   }, [isComplete]);
 
-  const handleShare = async () => {
-    if (!contentId) {
-      alert('Share not available - content was not saved');
-      return;
-    }
+  const [showSharePopup, setShowSharePopup] = useState(false);
+  const [shareUrl, setShareUrl] = useState('');
 
-    const shareUrl = `${window.location.origin}/share/${contentId}`;
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      alert('Share link copied to clipboard!');
-    } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
-      // Fallback: show the URL in a prompt
-      prompt('Copy this share link:', shareUrl);
-    }
+  const handleShare = () => {
+    if (!contentId) return;
+    setShareUrl(`${window.location.origin}/share/${contentId}`);
+    setShowSharePopup(true);
   };
 
   return (
     <div className="html-frame" style={{ display: isVisible ? 'block' : 'none' }}>
+      {showSharePopup && (
+        <SharePopup url={shareUrl} onClose={() => setShowSharePopup(false)} />
+      )}
       <button
         className="html-frame-share"
         onClick={handleShare}
@@ -283,25 +355,20 @@ export default function HtmlFrame({ html, title, contentId }: HtmlFrameProps) {
   // Ensure HTML has proper structure
   const fullHtml = html.toLowerCase().includes('<html') ? html : `<!DOCTYPE html><html><body>${html}</body></html>`;
 
-  const handleShare = async () => {
-    if (!contentId) {
-      alert('Share not available - content was not saved');
-      return;
-    }
+  const [showSharePopup, setShowSharePopup] = useState(false);
+  const [shareUrl, setShareUrl] = useState('');
 
-    const shareUrl = `${window.location.origin}/share/${contentId}`;
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      alert('Share link copied to clipboard!');
-    } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
-      // Fallback: show the URL in a prompt
-      prompt('Copy this share link:', shareUrl);
-    }
+  const handleShare = () => {
+    if (!contentId) return;
+    setShareUrl(`${window.location.origin}/share/${contentId}`);
+    setShowSharePopup(true);
   };
 
   return (
     <div className="html-frame">
+      {showSharePopup && (
+        <SharePopup url={shareUrl} onClose={() => setShowSharePopup(false)} />
+      )}
       <button
         className="html-frame-share"
         onClick={handleShare}

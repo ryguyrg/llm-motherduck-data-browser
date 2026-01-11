@@ -946,6 +946,154 @@ body {
   color: var(--charcoal);
 }
 
+/* Share Popup */
+.share-popup-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.15s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.share-popup {
+  background: var(--white, #fff);
+  border-radius: var(--border-radius, 12px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  width: 90%;
+  max-width: 480px;
+  animation: slideUp 0.2s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.share-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #eee;
+}
+
+.share-popup-title {
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--charcoal, #383838);
+}
+
+.share-popup-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  color: #666;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.share-popup-close:hover {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.share-popup-content {
+  padding: 20px;
+  display: flex;
+  gap: 12px;
+}
+
+.share-popup-input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: monospace;
+  color: var(--charcoal, #383838);
+  background: var(--off-white, #f8f8f7);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.share-popup-input:focus {
+  border-color: var(--blue, #6FC2FF);
+}
+
+.share-popup-copy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  background: var(--charcoal, #383838);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+  white-space: nowrap;
+}
+
+.share-popup-copy:hover {
+  background: #4a4a4a;
+}
+
+.share-popup-copy:active {
+  transform: scale(0.98);
+}
+
+/* Gemini theme share popup */
+.theme-gemini .share-popup {
+  border-radius: 16px;
+  font-family: 'Google Sans', sans-serif;
+}
+
+.theme-gemini .share-popup-title {
+  color: var(--text-primary, #1f1f1f);
+}
+
+.theme-gemini .share-popup-input {
+  background: #f8f9fa;
+  border-color: var(--border-color, #e0e0e0);
+  font-family: 'Roboto Mono', monospace;
+}
+
+.theme-gemini .share-popup-input:focus {
+  border-color: var(--accent-blue, #4285F4);
+}
+
+.theme-gemini .share-popup-copy {
+  background: var(--accent-blue, #4285F4);
+  border-radius: 20px;
+}
+
+.theme-gemini .share-popup-copy:hover {
+  background: #3367d6;
+}
+
 /* Gemini Light Theme */
 @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&display=swap');
 
