@@ -1413,7 +1413,8 @@ export default function ChatInterface() {
           (block.type === 'html' && block.html) ||
           (block.type === 'streaming_html' && block.htmlChunks) ||
           (block.type === 'tool_use' && block.toolName && (block.toolText || block.isActive)) ||
-          (block.type === 'intermediate_output' && block.intermediateContent)
+          (block.type === 'intermediate_output' && block.intermediateContent) ||
+          (block.type === 'shared_report' && block.shareId)
         );
   };
 
