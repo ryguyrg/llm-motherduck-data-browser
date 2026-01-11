@@ -150,6 +150,24 @@ async function saveHtmlContent(html: string, metadata?: HtmlMetadata): Promise<s
   }
 }
 
+// Fetch HTML content from a shared report
+async function fetchSharedReportHtml(shareId: string): Promise<string | null> {
+  try {
+    const result = await query<{ html_content: string }>(
+      `SELECT html_content FROM shares WHERE id = $1 AND expires_at > NOW()`,
+      [shareId]
+    );
+    if (result.rows.length === 0) {
+      console.log('[Chat API] Shared report not found or expired:', shareId);
+      return null;
+    }
+    return result.rows[0].html_content;
+  } catch (error) {
+    console.error('[Chat API] Failed to fetch shared report:', error);
+    return null;
+  }
+}
+
 // Create a new Anthropic client for each request to avoid stream conflicts
 function createAnthropicClient() {
   return new Anthropic({
@@ -278,6 +296,7 @@ interface ChatRequest {
   isMobile?: boolean;
   includeMetadata?: boolean;
   model?: string;
+  shareId?: string; // ID of a shared report to use as context
 }
 
 // Allowed databases - restrict access to only these
@@ -580,17 +599,45 @@ function convertToAnthropicMessages(messages: ChatMessage[]): MessageParam[] {
 export async function POST(request: NextRequest) {
   try {
     const body: ChatRequest = await request.json();
-    const { messages, isMobile = false, includeMetadata = true, model } = body;
+    const { messages, isMobile = false, includeMetadata = true, model, shareId } = body;
 
     const selectedModel = model || DEFAULT_MODEL;
     console.log('[Chat API] Request started via OpenRouter, model:', selectedModel);
     console.log('[Chat API] includeMetadata:', includeMetadata);
+    if (shareId) {
+      console.log('[Chat API] shareId provided:', shareId);
+    }
 
     if (!messages || messages.length === 0) {
       return new Response(JSON.stringify({ error: 'No messages provided' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // If shareId is provided, fetch the shared report HTML and prepend as context
+    let processedMessages = [...messages];
+    if (shareId) {
+      const sharedHtml = await fetchSharedReportHtml(shareId);
+      if (sharedHtml) {
+        console.log('[Chat API] Fetched shared report HTML, length:', sharedHtml.length);
+        // Find the last user message and prepend context
+        const lastUserMessageIndex = processedMessages.findLastIndex(m => m.role === 'user');
+        if (lastUserMessageIndex !== -1) {
+          const originalMessage = processedMessages[lastUserMessageIndex].content;
+          processedMessages[lastUserMessageIndex] = {
+            ...processedMessages[lastUserMessageIndex],
+            content: `[Context: The user is asking a follow-up question about a previously generated report. The full HTML of that report is provided below for context.]
+
+=== PREVIOUS REPORT HTML ===
+${sharedHtml}
+=== END PREVIOUS REPORT ===
+
+[User's follow-up question]:
+${originalMessage}`
+          };
+        }
+      }
     }
 
     // Read metadata file if requested
@@ -646,7 +693,7 @@ export async function POST(request: NextRequest) {
         };
 
         try {
-          let anthropicMessages = convertToAnthropicMessages(messages);
+          let anthropicMessages = convertToAnthropicMessages(processedMessages);
 
           // ========== BLENDED MODE ==========
           if (isBlendedMode) {
@@ -654,7 +701,7 @@ export async function POST(request: NextRequest) {
             send({ type: 'text', content: 'Gathering data with Gemini...\n\n' });
 
             // Phase 1: Gemini gathers data
-            let geminiMessages = convertToAnthropicMessages(messages);
+            let geminiMessages = convertToAnthropicMessages(processedMessages);
             let collectedData = '';
             let continueGathering = true;
             let gatherIteration = 0;

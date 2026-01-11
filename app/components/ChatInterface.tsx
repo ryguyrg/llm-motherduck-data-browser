@@ -485,7 +485,7 @@ export default function ChatInterface() {
   const [isToolRunning, setIsToolRunning] = useState<string | null>(null);
   const [includeMetadata, setIncludeMetadata] = useState(true);
   const [selectedModel, setSelectedModel] = useState(MODEL_OPTIONS[0].id);
-  const [sharedContext, setSharedContext] = useState<{ originalQuestion: string; sqlQueries: string } | null>(null);
+  const [sharedReportId, setSharedReportId] = useState<string | null>(null);
   const hasProcessedUrlParams = useRef(false);
 
   // Head-to-head mode state - tracks full conversation per model
@@ -580,20 +580,15 @@ export default function ChatInterface() {
     if (hasProcessedUrlParams.current) return;
 
     const question = searchParams.get('q');
-    const contextParam = searchParams.get('context');
+    const shareId = searchParams.get('shareId');
 
     if (question) {
       hasProcessedUrlParams.current = true;
       setInputValue(question);
 
-      // Parse context if provided
-      if (contextParam) {
-        try {
-          const context = JSON.parse(decodeURIComponent(contextParam));
-          setSharedContext(context);
-        } catch (e) {
-          console.error('Failed to parse shared context:', e);
-        }
+      // Store share ID if provided (will be sent to API to fetch full context)
+      if (shareId) {
+        setSharedReportId(shareId);
       }
 
       // Clear URL params without triggering navigation
@@ -729,6 +724,7 @@ export default function ChatInterface() {
     onToolEnd: () => void,
     onDone: () => void,
     onError: (error: string) => void,
+    shareId?: string | null,
   ) => {
     try {
       const response = await fetch('/api/chat', {
@@ -739,6 +735,7 @@ export default function ChatInterface() {
           isMobile,
           includeMetadata,
           model: modelName,
+          ...(shareId && { shareId }),
         }),
         signal: abortSignal,
       });
@@ -1152,20 +1149,13 @@ export default function ChatInterface() {
     }
 
     // Include shared context if available (from shared report links)
-    let messageContent = text;
-    if (sharedContext) {
-      const contextPrefix = `[Context from shared report]
-Original question: ${sharedContext.originalQuestion}
-${sharedContext.sqlQueries ? `\nSQL queries used:\n${sharedContext.sqlQueries}` : ''}
-
-[Follow-up question]
-`;
-      messageContent = contextPrefix + text;
-      // Clear shared context after first use
-      setSharedContext(null);
+    // Capture and clear shared report ID for this message
+    const currentSharedReportId = sharedReportId;
+    if (sharedReportId) {
+      setSharedReportId(null);
     }
 
-    const userMessage: Message = { role: 'user', content: messageContent };
+    const userMessage: Message = { role: 'user', content: text };
     // Use ref to get latest messages (avoids stale closure with queued messages)
     const currentMessages = messagesRef.current;
     const newMessages = [...currentMessages, userMessage];
@@ -1244,6 +1234,7 @@ ${sharedContext.sqlQueries ? `\nSQL queries used:\n${sharedContext.sqlQueries}` 
             // Still process queue on error
             processQueueForModel(modelConfig);
           },
+          currentSharedReportId,
         );
       });
 
@@ -1297,6 +1288,7 @@ ${sharedContext.sqlQueries ? `\nSQL queries used:\n${sharedContext.sqlQueries}` 
         setIsToolRunning(null);
         abortControllerRef.current = null;
       },
+      currentSharedReportId,
     )
   }, [inputValue, isLoading, includeMetadata, currentModelConfig, isHeadToHead, headToHeadMessages, headToHeadLoading, runModelStream, processQueueForModel]);
 

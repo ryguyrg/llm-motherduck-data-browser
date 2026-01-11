@@ -110,17 +110,15 @@ const chatOverlay = `
     const question = input.value.trim();
     if (!question) return;
 
-    const metadata = extractMetadata();
-    const context = metadata ? encodeURIComponent(JSON.stringify({
-      originalQuestion: metadata.question,
-      sqlQueries: metadata.sqlQueries
-    })) : '';
+    // Extract share ID from current URL path (e.g., /share/abc123)
+    const pathParts = window.location.pathname.split('/');
+    const shareId = pathParts[pathParts.length - 1];
 
-    // Redirect to main app with question and context
+    // Redirect to main app with question and share ID
     const baseUrl = window.location.origin;
     const params = new URLSearchParams();
     params.set('q', question);
-    if (context) params.set('context', context);
+    if (shareId) params.set('shareId', shareId);
 
     window.location.href = baseUrl + '/?' + params.toString();
   });
