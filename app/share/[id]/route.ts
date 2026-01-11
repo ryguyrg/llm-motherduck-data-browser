@@ -92,13 +92,10 @@ const chatOverlay = `
     if (!metadataMatch) return null;
 
     const metadata = metadataMatch[0];
-    const questionMatch = metadata.match(/=== USER QUESTION ===\\s*([\\s\\S]*?)(?=\\n===)/);
-    const sqlMatch = metadata.match(/=== SQL QUERIES ===\\s*([\\s\\S]*?)(?=\\n=== INTERMEDIATE)/);
+    const modelMatch = metadata.match(/Model:\\s*([^\\n]+)/);
 
     return {
-      question: questionMatch ? questionMatch[1].trim() : '',
-      sqlQueries: sqlMatch ? sqlMatch[1].trim() : '',
-      fullMetadata: metadata
+      model: modelMatch ? modelMatch[1].trim() : ''
     };
   }
 
@@ -114,11 +111,16 @@ const chatOverlay = `
     const pathParts = window.location.pathname.split('/');
     const shareId = pathParts[pathParts.length - 1];
 
-    // Redirect to main app with question and share ID
+    // Extract model from metadata
+    const metadata = extractMetadata();
+    const model = metadata ? metadata.model : '';
+
+    // Redirect to main app with question, share ID, and model
     const baseUrl = window.location.origin;
     const params = new URLSearchParams();
     params.set('q', question);
     if (shareId) params.set('shareId', shareId);
+    if (model) params.set('model', model);
 
     window.location.href = baseUrl + '/?' + params.toString();
   });
@@ -141,6 +143,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const { searchParams } = new URL(request.url);
+  const isEmbed = searchParams.get('embed') === '1';
 
   try {
     const result = await query<ShareRow>(
@@ -178,9 +182,10 @@ export async function GET(
     }
 
     const share = result.rows[0];
-    const htmlWithChat = injectChatOverlay(share.html_content);
+    // Only inject chat overlay for standalone view, not embedded
+    const finalHtml = isEmbed ? share.html_content : injectChatOverlay(share.html_content);
 
-    return new NextResponse(htmlWithChat, {
+    return new NextResponse(finalHtml, {
       status: 200,
       headers: {
         'Content-Type': 'text/html; charset=utf-8',

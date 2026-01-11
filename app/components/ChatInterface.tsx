@@ -402,7 +402,7 @@ const markdownComponents: Components = {
 };
 
 interface MessageContent {
-  type: 'text' | 'chart' | 'tool_use' | 'map' | 'html' | 'streaming_html' | 'intermediate_output';
+  type: 'text' | 'chart' | 'tool_use' | 'map' | 'html' | 'streaming_html' | 'intermediate_output' | 'shared_report';
   text?: string;
   chart?: ChartSpec;
   map?: MapSpec;
@@ -415,6 +415,7 @@ interface MessageContent {
   isActive?: boolean;
   intermediateSource?: string;  // For intermediate output (e.g., 'gemini')
   intermediateContent?: string; // For intermediate output content
+  shareId?: string;     // For shared report reference
 }
 
 interface Message {
@@ -581,15 +582,33 @@ export default function ChatInterface() {
 
     const question = searchParams.get('q');
     const shareId = searchParams.get('shareId');
+    const modelParam = searchParams.get('model');
 
-    if (question) {
+    if (shareId) {
       hasProcessedUrlParams.current = true;
-      setInputValue(question);
 
-      // Store share ID if provided (will be sent to API to fetch full context)
-      if (shareId) {
-        setSharedReportId(shareId);
+      // Set question in input if provided
+      if (question) {
+        setInputValue(question);
       }
+
+      // Store share ID (will be sent to API to fetch full context)
+      setSharedReportId(shareId);
+
+      // Set model based on URL param - map from model string to id
+      if (modelParam) {
+        const modelOption = MODEL_OPTIONS.find(m => m.model === modelParam);
+        if (modelOption) {
+          setSelectedModel(modelOption.id);
+          localStorage.setItem('selectedModel', modelOption.id);
+        }
+      }
+
+      // Add the shared report as an initial message to show in chat
+      setMessages([{
+        role: 'assistant',
+        content: [{ type: 'shared_report', shareId }]
+      }]);
 
       // Clear URL params without triggering navigation
       window.history.replaceState({}, '', window.location.pathname);
@@ -1450,6 +1469,18 @@ export default function ChatInterface() {
               }
               if (block.type === 'intermediate_output' && block.intermediateContent) {
                 return <IntermediateOutputSection key={blockKey} source={block.intermediateSource || 'unknown'} content={block.intermediateContent} expansionKey={blockKey} expansionState={expansionStates.current} onToggleExpansion={toggleExpansion} />;
+              }
+              if (block.type === 'shared_report' && block.shareId) {
+                return (
+                  <div key={blockKey} className="shared-report-frame">
+                    <div className="shared-report-label">Previous Report</div>
+                    <iframe
+                      src={`/share/${block.shareId}?embed=1`}
+                      title="Previous report"
+                      className="shared-report-iframe"
+                    />
+                  </div>
+                );
               }
               return null;
             })
