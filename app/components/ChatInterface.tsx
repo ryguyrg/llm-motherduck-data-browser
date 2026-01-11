@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import ReactMarkdown, { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Sparkline, { parseSparklineData } from './Sparkline';
@@ -477,12 +478,15 @@ const messagesToApiFormat = (msgs: Message[]) => {
 };
 
 export default function ChatInterface() {
+  const searchParams = useSearchParams();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isToolRunning, setIsToolRunning] = useState<string | null>(null);
   const [includeMetadata, setIncludeMetadata] = useState(true);
   const [selectedModel, setSelectedModel] = useState(MODEL_OPTIONS[0].id);
+  const [sharedContext, setSharedContext] = useState<{ originalQuestion: string; sqlQueries: string } | null>(null);
+  const hasProcessedUrlParams = useRef(false);
 
   // Head-to-head mode state - tracks full conversation per model
   const [headToHeadMessages, setHeadToHeadMessages] = useState<Record<string, Message[]>>({});
@@ -570,6 +574,35 @@ export default function ChatInterface() {
     // Mark as hydrated to show UI
     setIsHydrated(true);
   }, []);
+
+  // Handle URL params from shared report links
+  useEffect(() => {
+    if (hasProcessedUrlParams.current) return;
+
+    const question = searchParams.get('q');
+    const contextParam = searchParams.get('context');
+
+    if (question) {
+      hasProcessedUrlParams.current = true;
+      setInputValue(question);
+
+      // Parse context if provided
+      if (contextParam) {
+        try {
+          const context = JSON.parse(decodeURIComponent(contextParam));
+          setSharedContext(context);
+        } catch (e) {
+          console.error('Failed to parse shared context:', e);
+        }
+      }
+
+      // Clear URL params without triggering navigation
+      window.history.replaceState({}, '', window.location.pathname);
+
+      // Focus the input
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  }, [searchParams]);
 
   // Save messages to localStorage when they change (skip if empty to preserve loaded state)
   const prevMessagesRef = useRef<string>('');
@@ -1118,7 +1151,21 @@ export default function ChatInterface() {
       return;
     }
 
-    const userMessage: Message = { role: 'user', content: text };
+    // Include shared context if available (from shared report links)
+    let messageContent = text;
+    if (sharedContext) {
+      const contextPrefix = `[Context from shared report]
+Original question: ${sharedContext.originalQuestion}
+${sharedContext.sqlQueries ? `\nSQL queries used:\n${sharedContext.sqlQueries}` : ''}
+
+[Follow-up question]
+`;
+      messageContent = contextPrefix + text;
+      // Clear shared context after first use
+      setSharedContext(null);
+    }
+
+    const userMessage: Message = { role: 'user', content: messageContent };
     // Use ref to get latest messages (avoids stale closure with queued messages)
     const currentMessages = messagesRef.current;
     const newMessages = [...currentMessages, userMessage];
