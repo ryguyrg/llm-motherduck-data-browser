@@ -913,14 +913,22 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #666;
+  color: #ddd;
   transition: all 0.15s ease;
+}
+
+.html-frame-share.complete {
+  color: rgb(170, 0, 0);
 }
 
 .html-frame-share:hover {
   background: #fff;
-  color: #333;
+  color: #666;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.html-frame-share.complete:hover {
+  color: rgb(200, 0, 0);
 }
 
 .html-frame-share:disabled {

@@ -117,9 +117,13 @@ CREATE TABLE shares (
   id VARCHAR(255) PRIMARY KEY,
   html_content TEXT NOT NULL,
   model VARCHAR(255),
+  is_mobile BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMP NOT NULL
 );
+
+-- Migration for existing tables:
+-- ALTER TABLE shares ADD COLUMN is_mobile BOOLEAN NOT NULL DEFAULT FALSE;
 ```
 
 ### MotherDuck (via MCP)

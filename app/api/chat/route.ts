@@ -88,6 +88,7 @@ interface HtmlMetadata {
   intermediateOutput: string[];
   model: string;
   timestamp: string;
+  isMobile?: boolean;
 }
 
 // Escape HTML comment content to prevent breaking out of comments
@@ -139,10 +140,11 @@ async function saveHtmlContent(html: string, metadata?: HtmlMetadata): Promise<s
     const id = generateContentId();
     const htmlWithMetadata = metadata ? injectMetadataComments(html, metadata) : html;
     const model = metadata?.model || null;
+    const isMobile = metadata?.isMobile ?? false;
     await query(
-      `INSERT INTO shares (id, html_content, model, created_at, expires_at)
-       VALUES ($1, $2, $3, NOW(), NOW() + INTERVAL '30 days')`,
-      [id, htmlWithMetadata, model]
+      `INSERT INTO shares (id, html_content, model, is_mobile, created_at, expires_at)
+       VALUES ($1, $2, $3, $4, NOW(), NOW() + INTERVAL '30 days')`,
+      [id, htmlWithMetadata, model, isMobile]
     );
     return id;
   } catch (error) {
@@ -350,56 +352,58 @@ function composePrompt(template: string, replacements: Record<string, string>): 
   return result;
 }
 
-// Build the system prompt for standalone mode (any model)
-const getSystemPrompt = (isMobile: boolean, metadata?: string) => {
-  const template = getPrompt('standalone-system-prompt.md');
+// Build the shared data gathering prompt component
+const buildDataGatheringPromptComponent = (metadata?: string) => {
+  const template = getPrompt('system-prompt-data-gathering.md').replace(/^# .*\n+/, '');
 
-  // Strip the markdown header
-  const content = template.replace(/^# .*\n+/, '');
-
-  return composePrompt(content, {
-    'MOBILE_LAYOUT_INSTRUCTIONS': getMobileLayoutInstructions(isMobile),
+  return composePrompt(template, {
     'DATABASE_METADATA': getMetadataSection(metadata),
     'METADATA_USAGE_INSTRUCTIONS': getMetadataUsageInstructions(metadata),
     'NARRATION_DATABASE': getPrompt('narration-database.md').replace(/^# .*\n+/, ''),
-    'NARRATION_REPORT': getPrompt('narration-report.md').replace(/^# .*\n+/, ''),
     'DATABASE_RULES': getPrompt('database-rules.md').replace(/^# .*\n+/, '').replace('{{ALLOWED_DATABASES}}', ALLOWED_DATABASES.join(', ')),
     'SCHEMA_EXPLORATION_STEP': metadata ? 'Review the DATABASE METADATA above' : 'Use list_tables and list_columns tools',
+  });
+};
+
+// Build the shared report generation prompt component
+const buildReportGenerationPromptComponent = (isMobile: boolean) => {
+  const template = getPrompt('system-prompt-report-generation.md').replace(/^# .*\n+/, '');
+
+  return composePrompt(template, {
+    'MOBILE_LAYOUT_INSTRUCTIONS': getMobileLayoutInstructions(isMobile),
+    'NARRATION_REPORT': getPrompt('narration-report.md').replace(/^# .*\n+/, ''),
     'TUFTE_STYLE_GUIDE': getPrompt('tufte-style-guide.md').replace(/^# .*\n+/, ''),
     'HTML_TEMPLATE': getPrompt('html-template.md').replace(/^# .*\n+/, ''),
   });
 };
 
+// Build the system prompt for standalone mode (any model)
+const getSystemPrompt = (isMobile: boolean, metadata?: string) => {
+  const template = getPrompt('standalone-system-prompt.md').replace(/^# .*\n+/, '');
+
+  return composePrompt(template, {
+    'DATA_GATHERING_PROMPT': buildDataGatheringPromptComponent(metadata),
+    'REPORT_GENERATION_PROMPT': buildReportGenerationPromptComponent(isMobile),
+  });
+};
+
 // Build the data gathering prompt for Gemini in blended mode
 const getDataGatheringPrompt = (metadata?: string) => {
-  const template = getPrompt('blended-data-gathering-prompt.md');
+  const template = getPrompt('blended-data-gathering-prompt.md').replace(/^# .*\n+/, '');
 
-  // Strip the markdown header
-  const content = template.replace(/^# .*\n+/, '');
-
-  return composePrompt(content, {
-    'DATABASE_METADATA': getMetadataSection(metadata),
-    'METADATA_USAGE_INSTRUCTIONS': getMetadataUsageInstructions(metadata),
-    'DATABASE_RULES': getPrompt('database-rules.md').replace(/^# .*\n+/, '').replace('{{ALLOWED_DATABASES}}', ALLOWED_DATABASES.join(', ')),
-    'NARRATION_DATABASE': getPrompt('narration-database.md').replace(/^# .*\n+/, ''),
-    'SCHEMA_EXPLORATION_STEP': metadata ? 'Review the DATABASE METADATA above' : 'Use list_tables and list_columns tools',
+  return composePrompt(template, {
+    'DATA_GATHERING_PROMPT': buildDataGatheringPromptComponent(metadata),
     'SKIP_SCHEMA_INSTRUCTION': metadata ? 'DO NOT waste time exploring schema - use the metadata provided. ' : '',
   });
 };
 
 // Build the report generation prompt for Opus in blended mode
 const getReportGenerationPrompt = (isMobile: boolean) => {
-  const template = getPrompt('blended-report-generation-prompt.md');
+  const template = getPrompt('blended-report-generation-prompt.md').replace(/^# .*\n+/, '');
 
-  // Strip the markdown header
-  const content = template.replace(/^# .*\n+/, '');
-
-  return composePrompt(content, {
-    'MOBILE_LAYOUT_INSTRUCTIONS': getMobileLayoutInstructions(isMobile),
+  return composePrompt(template, {
     'DATABASE_RULES': getPrompt('database-rules.md').replace(/^# .*\n+/, '').replace('{{ALLOWED_DATABASES}}', ALLOWED_DATABASES.join(', ')),
-    'NARRATION_REPORT': getPrompt('narration-report.md').replace(/^# .*\n+/, ''),
-    'TUFTE_STYLE_GUIDE': getPrompt('tufte-style-guide.md').replace(/^# .*\n+/, ''),
-    'HTML_TEMPLATE': getPrompt('html-template.md').replace(/^# .*\n+/, ''),
+    'REPORT_GENERATION_PROMPT': buildReportGenerationPromptComponent(isMobile),
   });
 };
 
@@ -469,14 +473,26 @@ function isAborted(signal: AbortSignal): boolean {
 export async function POST(request: NextRequest) {
   // Get abort signal from request for cancellation support
   const abortSignal = request.signal;
+  const requestStartTime = Date.now();
+  let llmCallCount = 0;
+  let toolCallCount = 0;
+
+  // Helper for timing logs
+  const logTiming = (label: string, startTime: number) => {
+    const duration = Date.now() - startTime;
+    console.log(`[Chat API] ⏱️  ${label}: ${duration}ms`);
+    return duration;
+  };
 
   try {
     const body: ChatRequest = await request.json();
     const { messages, isMobile = false, includeMetadata = true, model, shareId } = body;
 
     const selectedModel = model || DEFAULT_MODEL;
-    console.log('[Chat API] Request started via OpenRouter, model:', selectedModel);
-    console.log('[Chat API] includeMetadata:', includeMetadata);
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`[Chat API] 🚀 REQUEST STARTED at ${new Date().toISOString()}`);
+    console.log(`[Chat API] Model: ${selectedModel}, Mobile: ${isMobile}, Metadata: ${includeMetadata}`);
+    console.log(`${'='.repeat(80)}`);
     if (shareId) {
       console.log('[Chat API] shareId provided:', shareId);
     }
@@ -595,12 +611,36 @@ export async function POST(request: NextRequest) {
 
               geminiNeedsRetry = false;
               gatherIteration++;
-              console.log(`[Chat API] Blended Phase 1 - Iteration ${gatherIteration}`);
+              llmCallCount++;
+
+              const dataGatheringSystemPrompt = getDataGatheringPrompt(metadata);
+              console.log(`\n${'─'.repeat(60)}`);
+              console.log(`[Chat API] 📤 BLENDED PHASE 1 - GEMINI LLM CALL #${llmCallCount} (iteration ${gatherIteration})`);
+              console.log(`${'─'.repeat(60)}`);
+
+              // Log system prompt (first iteration only)
+              if (gatherIteration === 1) {
+                console.log(`[Chat API] 📋 SYSTEM PROMPT (${dataGatheringSystemPrompt.length} chars):`);
+                console.log(dataGatheringSystemPrompt.slice(0, 2000) + (dataGatheringSystemPrompt.length > 2000 ? '\n... [truncated]' : ''));
+              }
+
+              // Log messages
+              console.log(`[Chat API] 💬 MESSAGES (${geminiMessages.length} total):`);
+              for (const msg of geminiMessages) {
+                const contentStr = typeof msg.content === 'string'
+                  ? msg.content
+                  : JSON.stringify(msg.content, null, 2);
+                const truncated = contentStr.length > 1000 ? contentStr.slice(0, 1000) + '\n... [truncated]' : contentStr;
+                console.log(`[Chat API]   [${msg.role}]: ${truncated}`);
+              }
+
+              const geminiLlmStartTime = Date.now();
+              console.log(`[Chat API] ⏳ Starting Gemini LLM call at ${new Date().toISOString()}`);
 
               const geminiResponse = await anthropic.messages.create({
                 model: GEMINI_MODEL,
                 max_tokens: 8192,
-                system: getDataGatheringPrompt(metadata),
+                system: dataGatheringSystemPrompt,
                 tools: dataGatheringTools,
                 messages: geminiMessages,
                 stream: true,
@@ -680,6 +720,12 @@ export async function POST(request: NextRequest) {
                 continue;
               }
 
+              // Log Gemini LLM response completion
+              const geminiLlmDuration = logTiming(`Gemini LLM call #${llmCallCount}`, geminiLlmStartTime);
+              const geminiResponseText = assistantContentBlocks.filter(b => b.type === 'text').map(b => (b as {text: string}).text).join('\n');
+              console.log(`[Chat API] 📥 GEMINI RESPONSE #${llmCallCount} (${geminiResponseText.length} chars, ${geminiLlmDuration}ms):`);
+              console.log(geminiResponseText.slice(0, 1000) + (geminiResponseText.length > 1000 ? '\n... [truncated]' : ''));
+
               // Capture all text from Gemini (including text before tool calls)
               for (const block of assistantContentBlocks) {
                 if (block.type === 'text' && block.text) {
@@ -690,6 +736,7 @@ export async function POST(request: NextRequest) {
 
               if (hasToolUse) {
                 const toolUseBlocks = assistantContentBlocks.filter(block => block.type === 'tool_use');
+                console.log(`\n[Chat API] 🔧 GEMINI TOOL CALLS: ${toolUseBlocks.length} tool(s) to execute`);
 
                 // Send tool_start events to show progress (include SQL if available)
                 for (const block of toolUseBlocks) {
@@ -703,9 +750,17 @@ export async function POST(request: NextRequest) {
                 // Execute tools in parallel
                 const toolResultPromises = toolUseBlocks.map(async (block) => {
                   if (block.type !== 'tool_use') return null;
+                  toolCallCount++;
+                  const toolStartTime = Date.now();
+                  const input = block.input as Record<string, unknown>;
 
-                  const validation = validateToolAccess(block.name, block.input as Record<string, unknown>);
+                  console.log(`[Chat API] 🔧 GEMINI TOOL START #${toolCallCount}: ${block.name}`);
+                  console.log(`[Chat API]    Input: ${JSON.stringify(input, null, 2).slice(0, 500)}${JSON.stringify(input).length > 500 ? '...' : ''}`);
+
+                  const validation = validateToolAccess(block.name, input);
                   if (!validation.allowed) {
+                    logTiming(`Tool ${block.name} (denied)`, toolStartTime);
+                    console.log(`[Chat API] 🔧 GEMINI TOOL END #${toolCallCount}: ${block.name} - ACCESS DENIED`);
                     return {
                       type: 'tool_result' as const,
                       tool_use_id: block.id,
@@ -715,9 +770,14 @@ export async function POST(request: NextRequest) {
                   }
 
                   try {
-                    const input = block.input as Record<string, unknown>;
                     const sql = input?.sql as string | undefined;
                     const toolResult = await executeTool(mcpClient!, block.name, input);
+                    const toolDuration = logTiming(`Tool ${block.name}`, toolStartTime);
+
+                    // Log tool result
+                    console.log(`[Chat API] 🔧 GEMINI TOOL END #${toolCallCount}: ${block.name} (${toolDuration}ms, ${toolResult.length} chars)`);
+                    console.log(`[Chat API]    Output: ${toolResult.slice(0, 500)}${toolResult.length > 500 ? '... [truncated]' : ''}`);
+
                     // Collect tool results for passing to Opus
                     collectedData += `\n**Tool: ${block.name}**\nInput: ${JSON.stringify(block.input)}\nResult: ${toolResult}\n`;
                     // Track SQL queries for metadata (blended mode)
@@ -730,6 +790,8 @@ export async function POST(request: NextRequest) {
                       content: toolResult,
                     };
                   } catch (error) {
+                    const toolDuration = logTiming(`Tool ${block.name} (error)`, toolStartTime);
+                    console.error(`[Chat API] 🔧 GEMINI TOOL ERROR #${toolCallCount}: ${block.name} (${toolDuration}ms)`, error);
                     return {
                       type: 'tool_result' as const,
                       tool_use_id: block.id,
@@ -758,7 +820,7 @@ export async function POST(request: NextRequest) {
               }
             }
 
-            console.log('[Chat API] Blended Phase 1 complete. Data collected:', collectedData.length, 'chars');
+            console.log(`\n[Chat API] ✅ BLENDED PHASE 1 COMPLETE - Data collected: ${collectedData.length} chars`);
 
             // Check for cancellation before Opus phase
             if (isAborted(abortSignal)) {
@@ -769,21 +831,30 @@ export async function POST(request: NextRequest) {
               return;
             }
 
-            console.log('[Chat API] Starting BLENDED mode - Phase 2: Opus report generation');
+            console.log(`\n${'─'.repeat(60)}`);
+            console.log('[Chat API] 📤 BLENDED PHASE 2 - OPUS REPORT GENERATION');
+            console.log(`${'─'.repeat(60)}`);
             send({ type: 'text', content: '\nGenerating report with Claude Opus...\n\n' });
 
             // Phase 2: Opus generates the report
             const userQuestion = messages[messages.length - 1]?.content || '';
             const opusTemplate = getPrompt('user-blended-opus-input.md').replace(/^# .*\n+/, '');
+            const opusUserMessage = composePrompt(opusTemplate, {
+              'USER_QUESTION': userQuestion,
+              'COLLECTED_DATA': collectedData,
+            });
             const opusMessages: MessageParam[] = [
               {
                 role: 'user',
-                content: composePrompt(opusTemplate, {
-                  'USER_QUESTION': userQuestion,
-                  'COLLECTED_DATA': collectedData,
-                }),
+                content: opusUserMessage,
               },
             ];
+
+            const reportGenSystemPrompt = getReportGenerationPrompt(isMobile);
+            console.log(`[Chat API] 📋 OPUS SYSTEM PROMPT (${reportGenSystemPrompt.length} chars):`);
+            console.log(reportGenSystemPrompt.slice(0, 2000) + (reportGenSystemPrompt.length > 2000 ? '\n... [truncated]' : ''));
+            console.log(`[Chat API] 💬 OPUS USER MESSAGE (${opusUserMessage.length} chars):`);
+            console.log(opusUserMessage.slice(0, 2000) + (opusUserMessage.length > 2000 ? '\n... [truncated]' : ''));
 
             let opusRetryCount = 0;
             let opusSuccess = false;
@@ -800,12 +871,16 @@ export async function POST(request: NextRequest) {
                 return;
               }
 
+              llmCallCount++;
+              const opusLlmStartTime = Date.now();
+              console.log(`[Chat API] ⏳ Starting Opus LLM call #${llmCallCount} at ${new Date().toISOString()}`);
+
               try {
                 opusFullResponse = ''; // Reset on retry
                 const opusResponse = await anthropic.messages.create({
                   model: OPUS_MODEL,
                   max_tokens: 16384,
-                  system: getReportGenerationPrompt(isMobile),
+                  system: reportGenSystemPrompt,
                   messages: opusMessages,
                   stream: true,
                 });
@@ -817,6 +892,10 @@ export async function POST(request: NextRequest) {
                     send({ type: 'text', content: event.delta.text });
                   }
                 }
+
+                const opusLlmDuration = logTiming(`Opus LLM call #${llmCallCount}`, opusLlmStartTime);
+                console.log(`[Chat API] 📥 OPUS RESPONSE #${llmCallCount} (${opusFullResponse.length} chars, ${opusLlmDuration}ms)`);
+                console.log(opusFullResponse.slice(0, 1000) + (opusFullResponse.length > 1000 ? '\n... [truncated]' : ''));
 
                 opusSuccess = true;
               } catch (opusError) {
@@ -851,6 +930,7 @@ export async function POST(request: NextRequest) {
                   intermediateOutput: blendedIntermediateOutput,
                   model: 'blended (Gemini + Opus)',
                   timestamp: new Date().toISOString(),
+                  isMobile,
                 };
                 const contentId = await saveHtmlContent(htmlContent, htmlMetadata);
                 if (contentId) {
@@ -862,6 +942,15 @@ export async function POST(request: NextRequest) {
 
             send({ type: 'done' });
             controller.close();
+
+            // Log blended mode completion summary
+            const totalDuration = Date.now() - requestStartTime;
+            console.log(`\n${'='.repeat(80)}`);
+            console.log(`[Chat API] ✅ BLENDED MODE REQUEST COMPLETED at ${new Date().toISOString()}`);
+            console.log(`[Chat API] 📊 Summary: ${llmCallCount} LLM calls, ${toolCallCount} tool calls`);
+            console.log(`[Chat API] ⏱️  Total duration: ${totalDuration}ms (${(totalDuration / 1000).toFixed(2)}s)`);
+            console.log(`${'='.repeat(80)}\n`);
+
             if (mcpClient) {
               await closeMcpClient(mcpClient);
             }
@@ -870,15 +959,51 @@ export async function POST(request: NextRequest) {
 
           // ========== STANDARD MODE (non-blended) ==========
 
+          // Metadata tracking for saved HTML
+          const userQuestion = messages[messages.length - 1]?.content || '';
+
+          // Apply standalone user message template (only if not already processed by shareId)
+          if (!shareId) {
+            const lastUserIndex = anthropicMessages.findLastIndex(m => m.role === 'user');
+            if (lastUserIndex !== -1) {
+              const lastUserContent = anthropicMessages[lastUserIndex].content;
+              const originalQuestion = typeof lastUserContent === 'string'
+                ? lastUserContent
+                : (lastUserContent as Array<{type: string; text?: string}>).find(b => b.type === 'text')?.text || '';
+
+              // Build conversation context from previous messages (if any)
+              let conversationContext = '';
+              if (messages.length > 1) {
+                const previousMessages = messages.slice(0, -1);
+                const contextSummary = previousMessages
+                  .filter(m => m.role === 'user' || m.role === 'assistant')
+                  .slice(-4) // Last 4 messages for context
+                  .map(m => `${m.role}: ${typeof m.content === 'string' ? m.content.slice(0, 200) : '[complex content]'}`)
+                  .join('\n');
+                if (contextSummary) {
+                  conversationContext = `**Conversation Context:**\n${contextSummary}\n`;
+                }
+              }
+
+              const standaloneTemplate = getPrompt('user-standalone-query.md').replace(/^# .*\n+/, '');
+              const wrappedMessage = composePrompt(standaloneTemplate, {
+                'USER_QUESTION': originalQuestion,
+                'CONVERSATION_CONTEXT': conversationContext,
+              });
+
+              anthropicMessages[lastUserIndex] = {
+                ...anthropicMessages[lastUserIndex],
+                content: wrappedMessage,
+              };
+            }
+          }
+
           // Loop to handle tool use
           let continueLoop = true;
           let isFirstResponse = true;
           let loopIteration = 0;
           let retryCount = 0;
           let needsRetry = false;
-
-          // Metadata tracking for saved HTML
-          const userQuestion = messages[messages.length - 1]?.content || '';
           const sqlQueries: Array<{ sql: string; result?: string }> = [];
           const intermediateOutput: string[] = [];
 
@@ -894,6 +1019,7 @@ export async function POST(request: NextRequest) {
 
             needsRetry = false;
             loopIteration++;
+            llmCallCount++;
             // Add newline separator between responses (after tool use)
             if (!isFirstResponse) {
               send({ type: 'text', content: '\n\n' });
@@ -901,18 +1027,34 @@ export async function POST(request: NextRequest) {
             isFirstResponse = false;
 
             // Log the prompt being sent
-            console.log(`\n[Chat API] === PROMPT ${loopIteration} ===`);
-            for (const msg of anthropicMessages) {
-              const contentPreview = typeof msg.content === 'string'
-                ? msg.content.slice(0, 500)
-                : JSON.stringify(msg.content).slice(0, 500);
-              console.log(`[Chat API] ${msg.role}: ${contentPreview}${contentPreview.length >= 500 ? '...' : ''}`);
+            const systemPrompt = getSystemPrompt(isMobile, metadata);
+            console.log(`\n${'─'.repeat(60)}`);
+            console.log(`[Chat API] 📤 LLM CALL #${llmCallCount} (iteration ${loopIteration})`);
+            console.log(`${'─'.repeat(60)}`);
+
+            // Log system prompt (first iteration only, truncated)
+            if (loopIteration === 1) {
+              console.log(`[Chat API] 📋 SYSTEM PROMPT (${systemPrompt.length} chars):`);
+              console.log(systemPrompt.slice(0, 2000) + (systemPrompt.length > 2000 ? '\n... [truncated]' : ''));
             }
+
+            // Log all messages
+            console.log(`[Chat API] 💬 MESSAGES (${anthropicMessages.length} total):`);
+            for (const msg of anthropicMessages) {
+              const contentStr = typeof msg.content === 'string'
+                ? msg.content
+                : JSON.stringify(msg.content, null, 2);
+              const truncated = contentStr.length > 1000 ? contentStr.slice(0, 1000) + '\n... [truncated]' : contentStr;
+              console.log(`[Chat API]   [${msg.role}]: ${truncated}`);
+            }
+
+            const llmStartTime = Date.now();
+            console.log(`[Chat API] ⏳ Starting LLM call at ${new Date().toISOString()}`);
 
             const response = await anthropic.messages.create({
               model: selectedModel,
               max_tokens: 16384,
-              system: getSystemPrompt(isMobile, metadata),
+              system: systemPrompt,
               tools: tools,
               messages: anthropicMessages,
               stream: true,
@@ -1002,9 +1144,10 @@ export async function POST(request: NextRequest) {
               continue;
             }
 
-            // Log first 50 lines of response
+            // Log LLM response completion
+            const llmDuration = logTiming(`LLM call #${llmCallCount} completed`, llmStartTime);
+            console.log(`[Chat API] 📥 RESPONSE #${llmCallCount} (${fullResponseText.length} chars, ${llmDuration}ms):`);
             const responseLines = fullResponseText.split('\n').slice(0, 50);
-            console.log(`[Chat API] === RESPONSE ${loopIteration} (first 50 lines) ===`);
             console.log(responseLines.join('\n'));
             if (fullResponseText.split('\n').length > 50) {
               console.log(`[Chat API] ... (${fullResponseText.split('\n').length - 50} more lines)`);
@@ -1013,6 +1156,7 @@ export async function POST(request: NextRequest) {
             // If there were tool uses, execute them in parallel
             if (hasToolUse) {
               const toolUseBlocks = assistantContentBlocks.filter(block => block.type === 'tool_use');
+              console.log(`\n[Chat API] 🔧 TOOL CALLS: ${toolUseBlocks.length} tool(s) to execute`);
 
               // Send all tool_start events with SQL if available
               for (const block of toolUseBlocks) {
@@ -1026,29 +1170,42 @@ export async function POST(request: NextRequest) {
               // Execute all tools in parallel
               const toolResultPromises = toolUseBlocks.map(async (block) => {
                 if (block.type !== 'tool_use') return null;
+                toolCallCount++;
+                const toolStartTime = Date.now();
+                const input = block.input as Record<string, unknown>;
+
+                console.log(`[Chat API] 🔧 TOOL START #${toolCallCount}: ${block.name}`);
+                console.log(`[Chat API]    Input: ${JSON.stringify(input, null, 2).slice(0, 500)}${JSON.stringify(input).length > 500 ? '...' : ''}`);
 
                 try {
                   if (block.name === 'generate_chart') {
                     const chartSpec = block.input as Record<string, unknown>;
                     send({ type: 'chart', spec: chartSpec });
+                    const result = 'Chart generated and displayed to user.';
+                    logTiming(`Tool ${block.name}`, toolStartTime);
+                    console.log(`[Chat API] 🔧 TOOL END #${toolCallCount}: ${block.name} - ${result}`);
                     return {
                       type: 'tool_result' as const,
                       tool_use_id: block.id,
-                      content: 'Chart generated and displayed to user.',
+                      content: result,
                     };
                   } else if (block.name === 'generate_map') {
                     const mapSpec = block.input as Record<string, unknown>;
                     send({ type: 'map', spec: mapSpec });
+                    const result = 'Map generated and displayed to user.';
+                    logTiming(`Tool ${block.name}`, toolStartTime);
+                    console.log(`[Chat API] 🔧 TOOL END #${toolCallCount}: ${block.name} - ${result}`);
                     return {
                       type: 'tool_result' as const,
                       tool_use_id: block.id,
-                      content: 'Map generated and displayed to user.',
+                      content: result,
                     };
                   } else {
                     // Validate database access before executing tool
-                    const input = block.input as Record<string, unknown>;
                     const validation = validateToolAccess(block.name, input);
                     if (!validation.allowed) {
+                      logTiming(`Tool ${block.name} (denied)`, toolStartTime);
+                      console.log(`[Chat API] 🔧 TOOL END #${toolCallCount}: ${block.name} - ACCESS DENIED: ${validation.message}`);
                       return {
                         type: 'tool_result' as const,
                         tool_use_id: block.id,
@@ -1059,6 +1216,13 @@ export async function POST(request: NextRequest) {
 
                     const sql = input?.sql as string | undefined;
                     const toolResult = await executeTool(mcpClient!, block.name, input);
+                    const toolDuration = logTiming(`Tool ${block.name}`, toolStartTime);
+
+                    // Log tool result (truncated)
+                    const resultPreview = toolResult.length > 1000 ? toolResult.slice(0, 1000) + '... [truncated]' : toolResult;
+                    console.log(`[Chat API] 🔧 TOOL END #${toolCallCount}: ${block.name} (${toolDuration}ms, ${toolResult.length} chars)`);
+                    console.log(`[Chat API]    Output: ${resultPreview}`);
+
                     // Track SQL queries for metadata
                     if (sql && block.name === 'query') {
                       sqlQueries.push({ sql, result: toolResult });
@@ -1070,7 +1234,8 @@ export async function POST(request: NextRequest) {
                     };
                   }
                 } catch (error) {
-                  console.error(`[Chat API] Tool execution error:`, error);
+                  const toolDuration = logTiming(`Tool ${block.name} (error)`, toolStartTime);
+                  console.error(`[Chat API] 🔧 TOOL ERROR #${toolCallCount}: ${block.name} (${toolDuration}ms)`, error);
                   return {
                     type: 'tool_result' as const,
                     tool_use_id: block.id,
@@ -1112,6 +1277,7 @@ export async function POST(request: NextRequest) {
                     intermediateOutput,
                     model: selectedModel,
                     timestamp: new Date().toISOString(),
+                    isMobile,
                   };
                   const contentId = await saveHtmlContent(htmlContent, htmlMetadata);
                   if (contentId) {
@@ -1126,12 +1292,27 @@ export async function POST(request: NextRequest) {
 
           send({ type: 'done' });
           controller.close();
+
+          // Log request completion summary
+          const totalDuration = Date.now() - requestStartTime;
+          console.log(`\n${'='.repeat(80)}`);
+          console.log(`[Chat API] ✅ REQUEST COMPLETED at ${new Date().toISOString()}`);
+          console.log(`[Chat API] 📊 Summary: ${llmCallCount} LLM calls, ${toolCallCount} tool calls`);
+          console.log(`[Chat API] ⏱️  Total duration: ${totalDuration}ms (${(totalDuration / 1000).toFixed(2)}s)`);
+          console.log(`${'='.repeat(80)}\n`);
         } catch (error) {
           console.error('[Chat API] Stream error:', error);
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           console.error('[Chat API] Error details:', errorMessage);
           send({ type: 'error', message: `Error: ${errorMessage}` });
           controller.close();
+
+          // Log request failure
+          const totalDuration = Date.now() - requestStartTime;
+          console.log(`\n${'='.repeat(80)}`);
+          console.log(`[Chat API] ❌ REQUEST FAILED at ${new Date().toISOString()}`);
+          console.log(`[Chat API] ⏱️  Total duration: ${totalDuration}ms`);
+          console.log(`${'='.repeat(80)}\n`);
         } finally {
           if (mcpClient) {
             await closeMcpClient(mcpClient);

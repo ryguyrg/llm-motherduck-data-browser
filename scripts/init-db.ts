@@ -81,6 +81,12 @@ async function initializeDatabase() {
       ALTER TABLE shares ADD COLUMN IF NOT EXISTS model VARCHAR(255);
     `);
 
+    // Add is_mobile column if it doesn't exist (for existing tables)
+    console.log('Ensuring is_mobile column exists...');
+    await client.query(`
+      ALTER TABLE shares ADD COLUMN IF NOT EXISTS is_mobile BOOLEAN DEFAULT FALSE;
+    `);
+
     console.log('Creating index on id column...');
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_shares_id ON shares(id);

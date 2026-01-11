@@ -12,6 +12,47 @@ import HtmlFrame, { StreamingHtmlFrame, isHtmlContent, extractHtmlParts } from '
 const DEBUG_HTML_DETECTION = false;
 const DEBUG_TOOL_TEXT = false;
 
+// Component to render shared reports with mobile/desktop awareness
+interface SharedReportFrameProps {
+  shareId: string;
+  currentIsMobile: boolean;
+}
+
+function SharedReportFrame({ shareId, currentIsMobile }: SharedReportFrameProps) {
+  const [shareInfo, setShareInfo] = useState<{ isMobile: boolean } | null>(null);
+
+  useEffect(() => {
+    async function fetchShareInfo() {
+      try {
+        const response = await fetch(`/api/share/${shareId}`);
+        if (response.ok) {
+          const data = await response.json();
+          setShareInfo({ isMobile: data.isMobile });
+        }
+      } catch (error) {
+        console.error('Failed to fetch share info:', error);
+      }
+    }
+    fetchShareInfo();
+  }, [shareId]);
+
+  // Show "(created in Desktop view)" if current user is on mobile but report was created on desktop
+  const showDesktopNote = currentIsMobile && shareInfo && !shareInfo.isMobile;
+
+  return (
+    <div className="shared-report-frame">
+      <div className="shared-report-label">
+        Previous Report{showDesktopNote && ' (created in Desktop view)'}
+      </div>
+      <iframe
+        src={`/share/${shareId}?embed=1`}
+        title="Previous report"
+        className="shared-report-iframe"
+      />
+    </div>
+  );
+}
+
 // Detect if streaming text contains the start of HTML content with actual renderable content
 function detectHtmlStart(text: string): { hasHtml: boolean; htmlStart: number; beforeText: string } {
   const lowerText = text.toLowerCase();
@@ -525,19 +566,35 @@ export default function ChatInterface() {
 
   const storageKey = 'mcp_chat_history';
   const [isHydrated, setIsHydrated] = useState(false);
+  const [currentIsMobile, setCurrentIsMobile] = useState(false);
+
+  // Detect mobile device on mount and resize
+  useEffect(() => {
+    const checkMobile = () => setCurrentIsMobile(window.innerWidth <= 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   // Load all state from localStorage on mount (client-side only to avoid hydration mismatch)
   useEffect(() => {
-    // Load standard mode messages
-    const savedMessages = localStorage.getItem(storageKey);
-    if (savedMessages) {
-      try {
-        const parsed = JSON.parse(savedMessages);
-        if (Array.isArray(parsed)) {
-          setMessages(parsed);
+    // Skip loading messages from localStorage if we're coming from a share link
+    // (the URL params effect will handle setting up the shared report context)
+    const urlParams = new URLSearchParams(window.location.search);
+    const hasShareId = urlParams.has('shareId');
+
+    // Load standard mode messages (unless coming from share link)
+    if (!hasShareId) {
+      const savedMessages = localStorage.getItem(storageKey);
+      if (savedMessages) {
+        try {
+          const parsed = JSON.parse(savedMessages);
+          if (Array.isArray(parsed)) {
+            setMessages(parsed);
+          }
+        } catch (e) {
+          console.error('Failed to parse saved chat history:', e);
         }
-      } catch (e) {
-        console.error('Failed to parse saved chat history:', e);
       }
     }
 
@@ -575,6 +632,11 @@ export default function ChatInterface() {
     // Mark as hydrated to show UI
     setIsHydrated(true);
   }, []);
+
+  // Update document title when app name changes
+  useEffect(() => {
+    document.title = currentModelConfig.appName;
+  }, [currentModelConfig.appName]);
 
   // Handle URL params from shared report links
   useEffect(() => {
@@ -826,14 +888,26 @@ export default function ChatInterface() {
                   contentBlocks.push({ type: 'streaming_html', htmlChunks, isComplete: false });
                   onUpdate(contentBlocks);
                 } else {
-                  // Display chain_of_thought block with committed content + current streaming text
+                  // Display chain_of_thought with committed content only (narration + SQL)
+                  // currentText (final answer) will be shown separately at done event
                   const committedText = cotBlock?.toolText || '';
-                  const displayCot: MessageContent = {
-                    type: 'tool_use',
-                    toolName: 'chain_of_thought',
-                    toolText: committedText + currentText,
-                    isActive: true
-                  };
+                  const displayBlocks: MessageContent[] = [...otherContent];
+
+                  // Show chain_of_thought if there's committed text (narration + SQL)
+                  if (committedText) {
+                    displayBlocks.unshift({
+                      type: 'tool_use',
+                      toolName: 'chain_of_thought',
+                      toolText: committedText,
+                      isActive: true
+                    });
+                  }
+
+                  // Show currentText as streaming text (will become final answer)
+                  if (currentText.trim()) {
+                    displayBlocks.push({ type: 'text', text: currentText });
+                  }
+
                   // Ensure cotBlock exists in currentContent for tracking
                   if (cotIndex < 0 && currentText.trim()) {
                     // Create cotBlock in currentContent (toolText stays empty - currentText is uncommitted)
@@ -850,7 +924,7 @@ export default function ChatInterface() {
                       ...currentContent.slice(cotIndex + 1),
                     ];
                   }
-                  onUpdate([displayCot, ...otherContent]);
+                  onUpdate(displayBlocks);
                 }
               } else if (data.type === 'done') {
                 console.log(`[${modelId}] done - currentContent:`, currentContent.map(c => c.type), 'currentText length:', currentText.length);
@@ -898,25 +972,31 @@ export default function ChatInterface() {
                     } else {
                       const cotBlock = currentContent.find(c => c.type === 'tool_use' && c.toolName === 'chain_of_thought');
                       const finalBlocks: MessageContent[] = [];
-                      const finalText = (cotBlock?.toolText || '') + currentText;
-                      // If no tool uses, render as inline text; otherwise use chain_of_thought
-                      if (hadToolUses) {
-                        finalBlocks.push({ type: 'tool_use', toolName: 'chain_of_thought', toolText: finalText, isActive: false });
-                      } else if (finalText.trim()) {
-                        finalBlocks.push({ type: 'text', text: finalText });
+                      // Separate chain_of_thought (narration + SQL) from final answer (currentText)
+                      if (hadToolUses && cotBlock?.toolText) {
+                        finalBlocks.push({ type: 'tool_use', toolName: 'chain_of_thought', toolText: cotBlock.toolText, isActive: false });
+                      }
+                      // currentText after all tool uses is the final answer - render as markdown
+                      if (currentText.trim()) {
+                        finalBlocks.push({ type: 'text', text: currentText });
                       }
                       finalBlocks.push(...getVisualizations(currentContent));
                       onUpdate(finalBlocks);
                     }
                   } else {
-                    // Final content: if no tool uses, render as inline text
+                    // Final content: separate chain_of_thought from final answer
                     const cotBlock = currentContent.find(c => c.type === 'tool_use' && c.toolName === 'chain_of_thought');
                     const finalBlocks: MessageContent[] = [];
-                    const finalText = (cotBlock?.toolText || '') + currentText;
-                    if (hadToolUses) {
-                      finalBlocks.push({ type: 'tool_use', toolName: 'chain_of_thought', toolText: finalText, isActive: false });
-                    } else if (finalText.trim()) {
-                      finalBlocks.push({ type: 'text', text: finalText });
+                    // Keep chain_of_thought separate (narration + SQL during queries)
+                    if (hadToolUses && cotBlock?.toolText) {
+                      finalBlocks.push({ type: 'tool_use', toolName: 'chain_of_thought', toolText: cotBlock.toolText, isActive: false });
+                    }
+                    // currentText after all tool uses is the final answer - render as markdown
+                    if (currentText.trim()) {
+                      finalBlocks.push({ type: 'text', text: currentText });
+                    } else if (!hadToolUses && cotBlock?.toolText) {
+                      // No tool uses and no currentText but has cotBlock - render as text
+                      finalBlocks.push({ type: 'text', text: cotBlock.toolText });
                     }
                     finalBlocks.push(...getVisualizations(currentContent));
                     console.log(`[${modelId}] finalBlocks:`, finalBlocks.map(b => ({ type: b.type, toolName: (b as any).toolName, textLen: (b as any).toolText?.length || (b as any).text?.length })));
@@ -1488,14 +1568,11 @@ export default function ChatInterface() {
               }
               if (block.type === 'shared_report' && block.shareId) {
                 return (
-                  <div key={blockKey} className="shared-report-frame">
-                    <div className="shared-report-label">Previous Report</div>
-                    <iframe
-                      src={`/share/${block.shareId}?embed=1`}
-                      title="Previous report"
-                      className="shared-report-iframe"
-                    />
-                  </div>
+                  <SharedReportFrame
+                    key={blockKey}
+                    shareId={block.shareId}
+                    currentIsMobile={currentIsMobile}
+                  />
                 );
               }
               return null;

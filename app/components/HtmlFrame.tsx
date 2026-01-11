@@ -275,7 +275,7 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title, contentId }:
         <SharePopup url={shareUrl} onClose={() => setShowSharePopup(false)} />
       )}
       <button
-        className="html-frame-share"
+        className={`html-frame-share ${isComplete ? 'complete' : ''}`}
         onClick={handleShare}
         title={contentId ? "Share" : "Share not available"}
         disabled={!contentId}
@@ -370,7 +370,7 @@ export default function HtmlFrame({ html, title, contentId }: HtmlFrameProps) {
         <SharePopup url={shareUrl} onClose={() => setShowSharePopup(false)} />
       )}
       <button
-        className="html-frame-share"
+        className="html-frame-share complete"
         onClick={handleShare}
         title={contentId ? "Share" : "Share not available"}
         disabled={!contentId}
