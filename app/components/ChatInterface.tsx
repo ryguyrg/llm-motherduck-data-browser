@@ -1675,7 +1675,8 @@ export default function ChatInterface() {
     }
   };
 
-  const clearHistory = () => {
+  // Stop generation without clearing history
+  const stopGeneration = () => {
     // Abort any ongoing API request
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -1687,12 +1688,16 @@ export default function ChatInterface() {
     });
     headToHeadAbortControllers.current = {};
 
-    setMessages([]);
-    setHeadToHeadMessages({});
     setHeadToHeadLoading({});
     setHeadToHeadToolRunning({});
     setIsLoading(false);
     setIsToolRunning(null);
+  };
+
+  const clearHistory = () => {
+    stopGeneration();
+    setMessages([]);
+    setHeadToHeadMessages({});
     // Clear chat history but keep user preferences (model selection, metadata toggle)
     localStorage.removeItem(storageKey);
     localStorage.removeItem('mcp_head_to_head_history');
@@ -1827,6 +1832,11 @@ export default function ChatInterface() {
     ? Object.values(headToHeadMessages).some(msgs => msgs.length > 0)
     : messages.length > 0;
 
+  // Check if any model is currently generating
+  const isAnyModelGenerating = isHeadToHead
+    ? Object.values(headToHeadLoading).some(loading => loading)
+    : isLoading;
+
   // Apply theme based on selected model
   const themeClass = selectedModel === 'gemini' ? 'theme-gemini' : (selectedModel === 'blended' || selectedModel === 'head-to-head') ? 'theme-quacker' : '';
 
@@ -1847,9 +1857,15 @@ export default function ChatInterface() {
           </div>
         </div>
         {hasConversation && (
-          <button className="chat-clear" onClick={clearHistory}>
-            Clear Chat
-          </button>
+          isAnyModelGenerating ? (
+            <button className="chat-stop" onClick={stopGeneration}>
+              ⏹ Stop
+            </button>
+          ) : (
+            <button className="chat-clear" onClick={clearHistory}>
+              Clear Chat
+            </button>
+          )
         )}
       </header>
 
