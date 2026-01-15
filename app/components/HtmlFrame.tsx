@@ -6,6 +6,7 @@ interface HtmlFrameProps {
   html: string;
   title?: string;
   contentId?: string;  // Server-side content ID for sharing
+  theme?: string;
 }
 
 // Streaming HTML Frame - renders HTML progressively as chunks arrive
@@ -14,15 +15,17 @@ interface StreamingHtmlFrameProps {
   isComplete: boolean;
   title?: string;
   contentId?: string;  // Server-side content ID for sharing
+  theme?: string;
 }
 
 // Share Popup Component
 interface SharePopupProps {
   url: string;
   onClose: () => void;
+  theme?: string;
 }
 
-export function SharePopup({ url, onClose }: SharePopupProps) {
+export function SharePopup({ url, onClose, theme }: SharePopupProps) {
   const [copied, setCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -49,7 +52,7 @@ export function SharePopup({ url, onClose }: SharePopupProps) {
   };
 
   return (
-    <div className="share-popup-backdrop" onClick={handleBackdropClick}>
+    <div className={`share-popup-backdrop ${theme || ''}`} onClick={handleBackdropClick}>
       <div className="share-popup">
         <div className="share-popup-header">
           <span className="share-popup-title">Share Link</span>
@@ -105,7 +108,7 @@ function simpleHash(str: string): number {
   return hash;
 }
 
-export function StreamingHtmlFrame({ htmlChunks, isComplete, title, contentId }: StreamingHtmlFrameProps) {
+export function StreamingHtmlFrame({ htmlChunks, isComplete, title, contentId, theme }: StreamingHtmlFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(450);
   const [isVisible, setIsVisible] = useState(false);
@@ -260,6 +263,17 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title, contentId }:
     }
   }, [isComplete]);
 
+  // Listen for tab activation to recalculate height (fixes hidden tab measurement issue)
+  useEffect(() => {
+    const handleTabActivated = () => {
+      setTimeout(updateHeight, 50);
+    };
+    window.addEventListener('tab-activated', handleTabActivated);
+    return () => {
+      window.removeEventListener('tab-activated', handleTabActivated);
+    };
+  }, [updateHeight]);
+
   const [showSharePopup, setShowSharePopup] = useState(false);
   const [shareUrl, setShareUrl] = useState('');
 
@@ -272,7 +286,7 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title, contentId }:
   return (
     <div className="html-frame" style={{ display: isVisible ? 'block' : 'none' }}>
       {showSharePopup && (
-        <SharePopup url={shareUrl} onClose={() => setShowSharePopup(false)} />
+        <SharePopup url={shareUrl} onClose={() => setShowSharePopup(false)} theme={theme} />
       )}
       <button
         className={`html-frame-share ${isComplete ? 'complete' : ''}`}
@@ -305,7 +319,7 @@ export function StreamingHtmlFrame({ htmlChunks, isComplete, title, contentId }:
   );
 }
 
-export default function HtmlFrame({ html, title, contentId }: HtmlFrameProps) {
+export default function HtmlFrame({ html, title, contentId, theme }: HtmlFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(450);
 
@@ -344,11 +358,18 @@ export default function HtmlFrame({ html, title, contentId }: HtmlFrameProps) {
     };
     window.addEventListener('message', handleMessage);
 
+    // Listen for tab activation to recalculate height (fixes hidden tab measurement issue)
+    const handleTabActivated = () => {
+      setTimeout(updateHeight, 50);
+    };
+    window.addEventListener('tab-activated', handleTabActivated);
+
     return () => {
       clearTimeout(timer);
       clearTimeout(timer2);
       clearTimeout(timer3);
       window.removeEventListener('message', handleMessage);
+      window.removeEventListener('tab-activated', handleTabActivated);
     };
   }, [html]);
 
@@ -367,7 +388,7 @@ export default function HtmlFrame({ html, title, contentId }: HtmlFrameProps) {
   return (
     <div className="html-frame">
       {showSharePopup && (
-        <SharePopup url={shareUrl} onClose={() => setShowSharePopup(false)} />
+        <SharePopup url={shareUrl} onClose={() => setShowSharePopup(false)} theme={theme} />
       )}
       <button
         className="html-frame-share complete"

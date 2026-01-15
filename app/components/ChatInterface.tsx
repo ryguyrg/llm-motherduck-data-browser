@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import ReactMarkdown, { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Sparkline, { parseSparklineData } from './Sparkline';
@@ -58,16 +58,17 @@ interface MarkdownWithShareProps {
   content: string;
   contentId: string;
   markdownComponents: Components;
+  theme?: string;
 }
 
-function MarkdownWithShare({ content, contentId, markdownComponents }: MarkdownWithShareProps) {
+function MarkdownWithShare({ content, contentId, markdownComponents, theme }: MarkdownWithShareProps) {
   const [showSharePopup, setShowSharePopup] = useState(false);
   const shareUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/share/${contentId}`;
 
   return (
     <div className="markdown-frame">
       {showSharePopup && (
-        <SharePopup url={shareUrl} onClose={() => setShowSharePopup(false)} />
+        <SharePopup url={shareUrl} onClose={() => setShowSharePopup(false)} theme={theme} />
       )}
       <button
         className="markdown-share-btn complete"
@@ -526,7 +527,7 @@ const MODEL_OPTIONS = [
   { id: 'gemini', name: 'Gemini 3 Flash', model: 'google/gemini-3-flash-preview', appName: 'Mash', subtitle: 'Gemini-like' },
   { id: 'opus', name: 'Claude Opus 4.5', model: 'anthropic/claude-opus-4.5', appName: 'Maude', subtitle: 'Claude-like' },
   { id: 'blended', name: 'Blended (Gemini + Opus)', model: 'blended', appName: 'Quacker', subtitle: 'Best of both' },
-  { id: 'head-to-head', name: 'Head-to-Head', model: 'head-to-head', appName: 'Quacker', subtitle: 'Compare all models' },
+  { id: 'head-to-head', name: 'Head-to-Head', model: 'head-to-head', appName: 'All the Quackers', subtitle: 'Compare all models' },
 ];
 
 // Models to run in head-to-head mode
@@ -560,14 +561,27 @@ const messagesToApiFormat = (msgs: Message[]) => {
   })).filter(msg => msg.content);
 };
 
-export default function ChatInterface() {
+// Map model IDs to URL-friendly app names
+const MODEL_TO_APP_PATH: Record<string, string> = {
+  'gemini': 'mash',
+  'opus': 'maude',
+  'blended': 'quacker',
+  'head-to-head': 'all-the-quackers',
+};
+
+interface ChatInterfaceProps {
+  initialModel?: string;
+}
+
+export default function ChatInterface({ initialModel }: ChatInterfaceProps) {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isToolRunning, setIsToolRunning] = useState<string | null>(null);
   const [includeMetadata, setIncludeMetadata] = useState(true);
-  const [selectedModel, setSelectedModel] = useState(MODEL_OPTIONS[0].id);
+  const [selectedModel, setSelectedModel] = useState(initialModel || MODEL_OPTIONS[0].id);
   const [sharedReportId, setSharedReportId] = useState<string | null>(null);
   const hasProcessedUrlParams = useRef(false);
 
@@ -712,10 +726,12 @@ export default function ChatInterface() {
       }
     }
 
-    // Load selected model
-    const savedModel = localStorage.getItem('mcp_selected_model');
-    if (savedModel && MODEL_OPTIONS.some(m => m.id === savedModel)) {
-      setSelectedModel(savedModel);
+    // Load selected model (skip if URL provided an initial model)
+    if (!initialModel) {
+      const savedModel = localStorage.getItem('mcp_selected_model');
+      if (savedModel && MODEL_OPTIONS.some(m => m.id === savedModel)) {
+        setSelectedModel(savedModel);
+      }
     }
 
     // Load head-to-head messages
@@ -823,7 +839,12 @@ export default function ChatInterface() {
   const saveSelectedModel = useCallback((model: string) => {
     setSelectedModel(model);
     localStorage.setItem('mcp_selected_model', model);
-  }, []);
+    // Navigate to the new app URL
+    const appPath = MODEL_TO_APP_PATH[model];
+    if (appPath) {
+      router.push(`/${appPath}`, { scroll: false });
+    }
+  }, [router]);
 
   // Track when we're switching tabs to prevent auto-scroll interference
   const isRestoringScroll = useRef(false);
@@ -851,6 +872,11 @@ export default function ChatInterface() {
     setTimeout(() => {
       isRestoringScroll.current = false;
     }, 50);
+
+    // Dispatch event to trigger iframe height recalculation after tab becomes visible
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('tab-activated'));
+    }, 100);
   }, [activeTab]);
 
   const saveIncludeMetadata = useCallback((include: boolean) => {
@@ -1728,6 +1754,9 @@ export default function ChatInterface() {
         );
   };
 
+  // Compute theme class based on selected model (used in renderMessage and the container)
+  const themeClass = selectedModel === 'gemini' ? 'theme-gemini' : (selectedModel === 'blended' || selectedModel === 'head-to-head') ? 'theme-quacker' : '';
+
   // Helper to render a single message
   // keyPrefix is used to ensure unique keys across different tabs in head-to-head mode
   const renderMessage = (msg: Message, idx: number, keyPrefix: string = 'msg') => {
@@ -1765,7 +1794,7 @@ export default function ChatInterface() {
                 const markdownContent = <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{displayText}</ReactMarkdown>;
                 // If contentId is present, use MarkdownWithShare component for consistent share dialog
                 if (block.contentId) {
-                  return <MarkdownWithShare key={blockKey} content={displayText} contentId={block.contentId} markdownComponents={markdownComponents} />;
+                  return <MarkdownWithShare key={blockKey} content={displayText} contentId={block.contentId} markdownComponents={markdownComponents} theme={themeClass} />;
                 }
                 return <div key={blockKey}>{markdownContent}</div>;
               }
@@ -1776,10 +1805,10 @@ export default function ChatInterface() {
                 return <ChatMap key={blockKey} spec={block.map} />;
               }
               if (block.type === 'html' && block.html) {
-                return <HtmlFrame key={blockKey} html={block.html} contentId={block.contentId} />;
+                return <HtmlFrame key={blockKey} html={block.html} contentId={block.contentId} theme={themeClass} />;
               }
               if (block.type === 'streaming_html' && block.htmlChunks) {
-                return <StreamingHtmlFrame key={blockKey} htmlChunks={block.htmlChunks} isComplete={block.isComplete || false} contentId={block.contentId} />;
+                return <StreamingHtmlFrame key={blockKey} htmlChunks={block.htmlChunks} isComplete={block.isComplete || false} contentId={block.contentId} theme={themeClass} />;
               }
               if (block.type === 'tool_use' && block.toolName) {
                 return <ToolUseSection key={blockKey} toolName={block.toolName} toolText={block.toolText || ''} isActive={block.isActive} isStreaming={isStreamingHtml} keyPrefix={blockKey} expansionState={expansionStates.current} onToggleExpansion={toggleExpansion} />;
@@ -1836,9 +1865,6 @@ export default function ChatInterface() {
   const isAnyModelGenerating = isHeadToHead
     ? Object.values(headToHeadLoading).some(loading => loading)
     : isLoading;
-
-  // Apply theme based on selected model
-  const themeClass = selectedModel === 'gemini' ? 'theme-gemini' : (selectedModel === 'blended' || selectedModel === 'head-to-head') ? 'theme-quacker' : '';
 
   // Show minimal loading state until localStorage is loaded to avoid flash
   if (!isHydrated) {

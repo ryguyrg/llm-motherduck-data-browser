@@ -1151,32 +1151,73 @@ body {
 }
 
 /* Gemini theme share popup */
-.theme-gemini .share-popup {
+.theme-gemini.share-popup-backdrop .share-popup {
   border-radius: 16px;
   font-family: 'Google Sans', sans-serif;
 }
 
-.theme-gemini .share-popup-title {
+.theme-gemini.share-popup-backdrop .share-popup-title {
   color: var(--text-primary, #1f1f1f);
 }
 
-.theme-gemini .share-popup-input {
+.theme-gemini.share-popup-backdrop .share-popup-input {
   background: #f8f9fa;
   border-color: var(--border-color, #e0e0e0);
   font-family: 'Roboto Mono', monospace;
 }
 
-.theme-gemini .share-popup-input:focus {
+.theme-gemini.share-popup-backdrop .share-popup-input:focus {
   border-color: var(--accent-blue, #4285F4);
 }
 
-.theme-gemini .share-popup-copy {
+.theme-gemini.share-popup-backdrop .share-popup-copy {
   background: var(--accent-blue, #4285F4);
   border-radius: 20px;
 }
 
-.theme-gemini .share-popup-copy:hover {
+.theme-gemini.share-popup-backdrop .share-popup-copy:hover {
   background: #3367d6;
+}
+
+/* Quacker theme share popup */
+.theme-quacker.share-popup-backdrop .share-popup {
+  border-radius: 0;
+  font-family: 'Inter', sans-serif;
+  background: var(--md-snow, #F6F5F2);
+}
+
+.theme-quacker.share-popup-backdrop .share-popup-title {
+  color: var(--md-black, #1D2021);
+}
+
+.theme-quacker.share-popup-backdrop .share-popup-input {
+  background: white;
+  border: 2px solid var(--md-black, #1D2021);
+  border-radius: 0;
+  font-family: 'Inter', monospace;
+}
+
+.theme-quacker.share-popup-backdrop .share-popup-input:focus {
+  border-color: var(--md-black, #1D2021);
+  outline: 2px solid var(--md-black, #1D2021);
+  outline-offset: 2px;
+}
+
+.theme-quacker.share-popup-backdrop .share-popup-copy {
+  background: var(--md-black, #1D2021);
+  border-radius: 0;
+}
+
+.theme-quacker.share-popup-backdrop .share-popup-copy:hover {
+  background: #333;
+}
+
+.theme-quacker.share-popup-backdrop .share-popup-close {
+  border-radius: 0;
+}
+
+.theme-quacker.share-popup-backdrop .share-popup-close:hover {
+  background: rgba(0, 0, 0, 0.1);
 }
 
 /* Gemini Light Theme */

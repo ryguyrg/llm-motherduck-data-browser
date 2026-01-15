@@ -1,10 +1,24 @@
-import { Suspense } from 'react';
-import ChatInterface from './components/ChatInterface';
+import { redirect } from 'next/navigation';
 
-export default function Home() {
-  return (
-    <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}>Loading...</div>}>
-      <ChatInterface />
-    </Suspense>
-  );
+interface HomeProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function Home({ searchParams }: HomeProps) {
+  const params = await searchParams;
+
+  // Preserve query params when redirecting to /mash
+  const queryString = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      if (Array.isArray(value)) {
+        value.forEach(v => queryString.append(key, v));
+      } else {
+        queryString.set(key, value);
+      }
+    }
+  }
+
+  const query = queryString.toString();
+  redirect(query ? `/mash?${query}` : '/mash');
 }

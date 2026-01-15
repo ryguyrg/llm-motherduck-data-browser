@@ -90,6 +90,14 @@ function generateChatOverlay(model: string | null): string {
   // Model is embedded from database (works for all shares, old and new)
   var REPORT_MODEL = ${JSON.stringify(model || '')};
 
+  // Map model strings to app paths
+  var MODEL_TO_PATH = {
+    'google/gemini-3-flash-preview': '/mash',
+    'anthropic/claude-opus-4.5': '/maude',
+    'blended': '/quacker',
+    'head-to-head': '/all-the-quackers'
+  };
+
   var form = document.getElementById('maude-chat-form');
   var input = document.getElementById('maude-chat-input');
 
@@ -102,6 +110,9 @@ function generateChatOverlay(model: string | null): string {
     var pathParts = window.location.pathname.split('/');
     var shareId = pathParts[pathParts.length - 1];
 
+    // Determine app path from model, default to /mash
+    var appPath = MODEL_TO_PATH[REPORT_MODEL] || '/mash';
+
     // Redirect to main app with question, share ID, and model
     var baseUrl = window.location.origin;
     var params = new URLSearchParams();
@@ -109,7 +120,7 @@ function generateChatOverlay(model: string | null): string {
     if (shareId) params.set('shareId', shareId);
     if (REPORT_MODEL) params.set('model', REPORT_MODEL);
 
-    window.location.href = baseUrl + '/?' + params.toString();
+    window.location.href = baseUrl + appPath + '?' + params.toString();
   });
 })();
 </script>
