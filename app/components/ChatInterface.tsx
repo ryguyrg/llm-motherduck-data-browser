@@ -517,24 +517,14 @@ const getVisualizationsAndHtml = (content: MessageContent[]): MessageContent[] =
     c.type === 'html' || c.type === 'streaming_html'
   );
 
-const WELCOME_PROMPTS = [
+const DEFAULT_WELCOME_PROMPTS = [
   'What products do we sell, and how have they performed?',
   'Which customers buy the largest variety of products?',
   'Analyze sales by region and show a map with details.',
 ];
 
 const MODEL_OPTIONS = [
-  { id: 'gemini', name: 'Gemini 3 Flash', model: 'google/gemini-3-flash-preview', appName: 'Mash', subtitle: 'Gemini-like' },
-  { id: 'opus', name: 'Claude Opus 4.5', model: 'anthropic/claude-opus-4.5', appName: 'Maude', subtitle: 'Claude-like' },
-  { id: 'blended', name: 'Blended (Gemini + Opus)', model: 'blended', appName: 'Quacker', subtitle: 'Best of both' },
-  { id: 'head-to-head', name: 'Head-to-Head', model: 'head-to-head', appName: 'All the Quackers', subtitle: 'Compare all models' },
-];
-
-// Models to run in head-to-head mode
-const HEAD_TO_HEAD_MODELS = [
-  { id: 'gemini', name: 'Gemini', model: 'google/gemini-3-flash-preview' },
-  { id: 'opus', name: 'Claude Opus', model: 'anthropic/claude-opus-4.5' },
-  { id: 'blended', name: 'Blended', model: 'blended' },
+  { id: 'gemini', name: 'Gemini 3 Flash', model: 'google/gemini-3-flash-preview', appName: 'Mash', subtitle: 'Gemini-powered' },
 ];
 
 // Helper to convert messages to API format (pure function, outside component)
@@ -564,16 +554,16 @@ const messagesToApiFormat = (msgs: Message[]) => {
 // Map model IDs to URL-friendly app names
 const MODEL_TO_APP_PATH: Record<string, string> = {
   'gemini': 'mash',
-  'opus': 'maude',
-  'blended': 'quacker',
-  'head-to-head': 'all-the-quackers',
 };
 
 interface ChatInterfaceProps {
   initialModel?: string;
+  datasetPath?: string;
+  datasetName?: string;
+  examplePrompts?: string[];
 }
 
-export default function ChatInterface({ initialModel }: ChatInterfaceProps) {
+export default function ChatInterface({ initialModel, datasetPath = 'eastlake', datasetName = 'Mash', examplePrompts }: ChatInterfaceProps) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -585,29 +575,30 @@ export default function ChatInterface({ initialModel }: ChatInterfaceProps) {
   const [sharedReportId, setSharedReportId] = useState<string | null>(null);
   const hasProcessedUrlParams = useRef(false);
 
-  // Head-to-head mode state - tracks full conversation per model
-  const [headToHeadMessages, setHeadToHeadMessages] = useState<Record<string, Message[]>>({});
-  const [headToHeadLoading, setHeadToHeadLoading] = useState<Record<string, boolean>>({});
-  const [headToHeadToolRunning, setHeadToHeadToolRunning] = useState<Record<string, string | null>>({});
-  const [activeTab, setActiveTab] = useState(HEAD_TO_HEAD_MODELS[0].id);
-  const headToHeadAbortControllers = useRef<Record<string, AbortController>>({});
-
   // Message queue for submitting while a response is in progress (supports multiple queued messages)
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   // Ref to access queue synchronously (kept in sync via useEffect)
   const messageQueueRef = useRef<string[]>([]);
-  // Flag to prevent processing multiple queue items simultaneously (standard mode)
+  // Flag to prevent processing multiple queue items simultaneously
   const isProcessingQueueRef = useRef(false);
-  // Per-model queue processing for head-to-head mode
-  const headToHeadQueueIndexRef = useRef<Record<string, number>>({});
-  // Per-model processing flags to prevent double processing
-  const headToHeadProcessingRef = useRef<Record<string, boolean>>({});
-  // Ref to track latest headToHeadMessages for queue processing
-  const headToHeadMessagesRef = useRef<Record<string, Message[]>>({});
-  headToHeadMessagesRef.current = headToHeadMessages;
 
   const currentModelConfig = MODEL_OPTIONS.find(m => m.id === selectedModel) || MODEL_OPTIONS[0];
-  const isHeadToHead = selectedModel === 'head-to-head';
+  // Head-to-head mode is disabled in this simplified version
+  const isHeadToHead = false;
+  const headToHeadMessages: Record<string, Message[]> = {};
+  const headToHeadLoading: Record<string, boolean> = {};
+  const headToHeadToolRunning: Record<string, string | null> = {};
+  const setHeadToHeadLoading = (_v: Record<string, boolean> | ((prev: Record<string, boolean>) => Record<string, boolean>)) => {};
+  const setHeadToHeadToolRunning = (_v: Record<string, string | null> | ((prev: Record<string, string | null>) => Record<string, string | null>)) => {};
+  const setHeadToHeadMessages = (_v: Record<string, Message[]> | ((prev: Record<string, Message[]>) => Record<string, Message[]>)) => {};
+  const activeTab = 'gemini';
+  const setActiveTab = (_v: string) => {};
+  const headToHeadAbortControllers = useRef<Record<string, AbortController>>({});
+  const headToHeadQueueIndexRef = useRef<Record<string, number>>({});
+  const headToHeadProcessingRef = useRef<Record<string, boolean>>({});
+  const headToHeadMessagesRef = useRef<Record<string, Message[]>>({});
+  const HEAD_TO_HEAD_MODELS: { id: string; name: string; model: string }[] = [];
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const tabScrollPositions = useRef<Record<string, number>>({});
@@ -956,6 +947,7 @@ export default function ChatInterface({ initialModel }: ChatInterfaceProps) {
           isMobile,
           includeMetadata,
           model: modelName,
+          datasetPath,
           ...(shareId && { shareId }),
         }),
         signal: abortSignal,
@@ -1898,10 +1890,10 @@ export default function ChatInterface({ initialModel }: ChatInterfaceProps) {
       <div className="chat-messages" ref={messagesContainerRef}>
         {!hasConversation ? (
           <div className="chat-welcome">
-            <h2><span className="welcome-full">Welcome to {currentModelConfig.appName}</span><span className="welcome-short">Welcome</span></h2>
-            <p>We've hooked up this interface to MotherDuck using the MotherDuck MCP Server. You have access to business data for a fictitious business, Eastlake, which manufactures and sells products to businesses. Start asking it some questions.</p>
+            <h2><span className="welcome-full">Welcome to {datasetName}</span><span className="welcome-short">Welcome</span></h2>
+            <p>This interface is connected to MotherDuck using the MotherDuck MCP Server. Ask questions about your data and get insights with visualizations.</p>
             <div className="welcome-prompts">
-              {WELCOME_PROMPTS.map((example, idx) => (
+              {(examplePrompts || DEFAULT_WELCOME_PROMPTS).map((example, idx) => (
                 <button
                   key={idx}
                   className="welcome-prompt"
@@ -1922,20 +1914,6 @@ export default function ChatInterface({ initialModel }: ChatInterfaceProps) {
               <span className="toggle-slider"></span>
               <span className="toggle-label">Include metadata in prompt</span>
             </label>
-            <div className="model-selector">
-              <label className="model-selector-label">Model:</label>
-              <select
-                value={selectedModel}
-                onChange={(e) => saveSelectedModel(e.target.value)}
-                className="model-dropdown"
-              >
-                {MODEL_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.name}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
         ) : isHeadToHead ? (
           /* Head-to-head mode: render ALL tabs but only show the active one */

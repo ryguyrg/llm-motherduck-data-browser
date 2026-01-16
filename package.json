@@ -1,5 +1,5 @@
 {
-  "name": "mcp-chat",
+  "name": "llm-motherduck-data-browser",
   "version": "1.0.0",
   "private": true,
   "scripts": {
@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "db:init": "npx tsx scripts/init-db.ts"
+    "db:init": "npx tsx scripts/init-db.ts",
+    "db:seed-eastlake": "npx tsx scripts/seed-eastlake.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",

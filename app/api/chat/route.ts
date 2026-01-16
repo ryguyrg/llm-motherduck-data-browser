@@ -5,6 +5,7 @@ import type { MessageParam, ToolResultBlockParam, ContentBlock, Tool } from '@an
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { query } from '@/lib/planetscale';
+import { getDatasetByPath, Dataset } from '@/lib/datasets';
 import { marked } from 'marked';
 
 // Generate a random ID for content storage
@@ -470,9 +471,8 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 // Default model - Gemini 3 Flash Preview via OpenRouter
 const DEFAULT_MODEL = 'google/gemini-3-flash-preview';
 
-// Model IDs for blended mode
+// Model ID
 const GEMINI_MODEL = 'google/gemini-3-flash-preview';
-const OPUS_MODEL = 'anthropic/claude-opus-4.5';
 
 // Custom tool for chart generation
 const chartTool: Tool = {
@@ -565,10 +565,11 @@ interface ChatRequest {
   includeMetadata?: boolean;
   model?: string;
   shareId?: string; // ID of a shared report to use as context
+  datasetPath?: string; // URL path of the dataset to use (e.g., 'eastlake')
 }
 
-// Allowed databases - restrict access to only these
-const ALLOWED_DATABASES = ['eastlake'];
+// Default allowed databases - can be overridden by dataset config
+const DEFAULT_ALLOWED_DATABASES = ['eastlake'];
 
 // Load prompt files from disk
 const promptsDir = join(process.cwd(), 'prompts');
@@ -618,14 +619,14 @@ function composePrompt(template: string, replacements: Record<string, string>): 
 }
 
 // Build the shared data gathering prompt component
-const buildDataGatheringPromptComponent = (metadata?: string) => {
+const buildDataGatheringPromptComponent = (metadata?: string, allowedDatabases: string[] = DEFAULT_ALLOWED_DATABASES) => {
   const template = getPrompt('system-prompt-data-gathering.md').replace(/^# .*\n+/, '');
 
   return composePrompt(template, {
     'DATABASE_METADATA': getMetadataSection(metadata),
     'METADATA_USAGE_INSTRUCTIONS': getMetadataUsageInstructions(metadata),
     'NARRATION_DATABASE': getPrompt('narration-database.md').replace(/^# .*\n+/, ''),
-    'DATABASE_RULES': getPrompt('database-rules.md').replace(/^# .*\n+/, '').replace('{{ALLOWED_DATABASES}}', ALLOWED_DATABASES.join(', ')),
+    'DATABASE_RULES': getPrompt('database-rules.md').replace(/^# .*\n+/, '').replace('{{ALLOWED_DATABASES}}', allowedDatabases.join(', ')),
     'SCHEMA_EXPLORATION_STEP': metadata ? 'Review the DATABASE METADATA above' : 'Use list_tables and list_columns tools',
   });
 };
@@ -643,52 +644,32 @@ const buildReportGenerationPromptComponent = (isMobile: boolean) => {
 };
 
 // Build the system prompt for standalone mode (any model)
-const getSystemPrompt = (isMobile: boolean, metadata?: string) => {
+const getSystemPrompt = (isMobile: boolean, metadata?: string, allowedDatabases: string[] = DEFAULT_ALLOWED_DATABASES) => {
   const template = getPrompt('standalone-system-prompt.md').replace(/^# .*\n+/, '');
 
   return composePrompt(template, {
-    'DATA_GATHERING_PROMPT': buildDataGatheringPromptComponent(metadata),
-    'REPORT_GENERATION_PROMPT': buildReportGenerationPromptComponent(isMobile),
-  });
-};
-
-// Build the data gathering prompt for Gemini in blended mode
-const getDataGatheringPrompt = (metadata?: string) => {
-  const template = getPrompt('blended-data-gathering-prompt.md').replace(/^# .*\n+/, '');
-
-  return composePrompt(template, {
-    'DATA_GATHERING_PROMPT': buildDataGatheringPromptComponent(metadata),
-    'SKIP_SCHEMA_INSTRUCTION': metadata ? 'DO NOT waste time exploring schema - use the metadata provided. ' : '',
-  });
-};
-
-// Build the report generation prompt for Opus in blended mode
-const getReportGenerationPrompt = (isMobile: boolean) => {
-  const template = getPrompt('blended-report-generation-prompt.md').replace(/^# .*\n+/, '');
-
-  return composePrompt(template, {
-    'DATABASE_RULES': getPrompt('database-rules.md').replace(/^# .*\n+/, '').replace('{{ALLOWED_DATABASES}}', ALLOWED_DATABASES.join(', ')),
+    'DATA_GATHERING_PROMPT': buildDataGatheringPromptComponent(metadata, allowedDatabases),
     'REPORT_GENERATION_PROMPT': buildReportGenerationPromptComponent(isMobile),
   });
 };
 
 // Check if a database reference is allowed
-function isDatabaseAllowed(dbName: string): boolean {
+function isDatabaseAllowed(dbName: string, allowedDatabases: string[] = DEFAULT_ALLOWED_DATABASES): boolean {
   const normalized = dbName.toLowerCase().trim();
-  return ALLOWED_DATABASES.some(allowed =>
+  return allowedDatabases.some(allowed =>
     normalized === allowed.toLowerCase() ||
     normalized.startsWith(allowed.toLowerCase() + '.')
   );
 }
 
 // Validate tool arguments for database access
-function validateToolAccess(toolName: string, args: Record<string, unknown>): { allowed: boolean; message?: string } {
+function validateToolAccess(toolName: string, args: Record<string, unknown>, allowedDatabases: string[] = DEFAULT_ALLOWED_DATABASES): { allowed: boolean; message?: string } {
   // Check database parameter in list_tables, list_columns, query tools
   if (args.database && typeof args.database === 'string') {
-    if (!isDatabaseAllowed(args.database)) {
+    if (!isDatabaseAllowed(args.database, allowedDatabases)) {
       return {
         allowed: false,
-        message: `Access denied: Database '${args.database}' is not in the allowed list. You can only access: ${ALLOWED_DATABASES.join(', ')}`
+        message: `Access denied: Database '${args.database}' is not in the allowed list. You can only access: ${allowedDatabases.join(', ')}`
       };
     }
   }
@@ -711,10 +692,10 @@ function validateToolAccess(toolName: string, args: Record<string, unknown>): { 
       if (['main', 'public', 'information_schema', 'pg_catalog'].includes(potentialDb.toLowerCase())) continue;
       // Skip if it looks like a table.column reference (afterDot is a column-like name)
       // Only flag if the first part looks like a database name and is NOT allowed
-      if (!isDatabaseAllowed(potentialDb)) {
+      if (!isDatabaseAllowed(potentialDb, allowedDatabases)) {
         return {
           allowed: false,
-          message: `Access denied: Query references unauthorized database '${potentialDb}'. You can only access: ${ALLOWED_DATABASES.join(', ')}`
+          message: `Access denied: Query references unauthorized database '${potentialDb}'. You can only access: ${allowedDatabases.join(', ')}`
         };
       }
     }
@@ -751,12 +732,12 @@ export async function POST(request: NextRequest) {
 
   try {
     const body: ChatRequest = await request.json();
-    const { messages, isMobile = false, includeMetadata = true, model, shareId } = body;
+    const { messages, isMobile = false, includeMetadata = true, model, shareId, datasetPath = 'eastlake' } = body;
 
     const selectedModel = model || DEFAULT_MODEL;
     console.log(`\n${'='.repeat(80)}`);
     console.log(`[Chat API] 🚀 REQUEST STARTED at ${new Date().toISOString()}`);
-    console.log(`[Chat API] Model: ${selectedModel}, Mobile: ${isMobile}, Metadata: ${includeMetadata}`);
+    console.log(`[Chat API] Model: ${selectedModel}, Mobile: ${isMobile}, Metadata: ${includeMetadata}, Dataset: ${datasetPath}`);
     console.log(`${'='.repeat(80)}`);
     if (shareId) {
       console.log('[Chat API] shareId provided:', shareId);
@@ -767,6 +748,19 @@ export async function POST(request: NextRequest) {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // Load dataset configuration from database
+    let dataset: Dataset | null = null;
+    try {
+      dataset = await getDatasetByPath(datasetPath);
+      if (dataset) {
+        console.log(`[Chat API] Loaded dataset: ${dataset.name} (${dataset.url_path})`);
+      } else {
+        console.log(`[Chat API] Dataset '${datasetPath}' not found, using defaults`);
+      }
+    } catch (error) {
+      console.error('[Chat API] Failed to load dataset:', error);
     }
 
     // If shareId is provided, fetch the shared report HTML and prepend as context
@@ -791,15 +785,21 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Read metadata file if requested
+    // Load metadata from dataset or fallback to file
     let metadata: string | undefined;
     if (includeMetadata) {
-      try {
-        const metadataPath = join(process.cwd(), 'eastlake_metadata.md');
-        metadata = readFileSync(metadataPath, 'utf-8');
-        console.log('[Chat API] Loaded metadata file, length:', metadata.length);
-      } catch (error) {
-        console.log('[Chat API] Metadata file not found, continuing without it');
+      if (dataset?.metadata) {
+        metadata = dataset.metadata;
+        console.log('[Chat API] Loaded metadata from dataset, length:', metadata.length);
+      } else {
+        // Fallback to file-based metadata
+        try {
+          const metadataPath = join(process.cwd(), 'eastlake_metadata.md');
+          metadata = readFileSync(metadataPath, 'utf-8');
+          console.log('[Chat API] Loaded metadata from file, length:', metadata.length);
+        } catch (error) {
+          console.log('[Chat API] Metadata file not found, continuing without it');
+        }
       }
     } else {
       console.log('[Chat API] Metadata disabled by user');
@@ -808,11 +808,16 @@ export async function POST(request: NextRequest) {
     // Create a fresh Anthropic client for this request to avoid stream conflicts
     const anthropic = createAnthropicClient();
 
-    // Create MCP client and get tools
+    // Determine allowed databases from dataset
+    const allowedDatabases = dataset?.url_path ? [dataset.url_path] : DEFAULT_ALLOWED_DATABASES;
+    console.log(`[Chat API] Allowed databases: ${allowedDatabases.join(', ')}`);
+
+    // Create MCP client and get tools (use dataset's token if available)
     let mcpClient;
     let mcpTools: Tool[] = [];
+    const motherduckToken = dataset?.motherduck_token || undefined;
     try {
-      mcpClient = await createMcpClient();
+      mcpClient = await createMcpClient(motherduckToken);
       mcpTools = await getToolsForClaude(mcpClient);
       console.log(`[Chat API] Got ${mcpTools.length} tools from MCP server`);
     } catch (error) {
@@ -827,11 +832,6 @@ export async function POST(request: NextRequest) {
     // Filter out list_databases tool and combine with our custom chart tool
     const filteredMcpTools = mcpTools.filter(tool => tool.name !== 'list_databases');
     const tools: Tool[] = [...filteredMcpTools, chartTool, mapTool];
-    // For blended mode data gathering, only use database tools (no chart/map generation)
-    const dataGatheringTools: Tool[] = [...filteredMcpTools];
-
-    // Check if we're in blended mode
-    const isBlendedMode = selectedModel === 'blended';
 
     // Create streaming response
     const encoder = new TextEncoder();
@@ -845,384 +845,6 @@ export async function POST(request: NextRequest) {
 
         try {
           let anthropicMessages = convertToAnthropicMessages(processedMessages);
-
-          // ========== BLENDED MODE ==========
-          if (isBlendedMode) {
-            console.log('[Chat API] Starting BLENDED mode - Phase 1: Gemini data gathering');
-            send({ type: 'text', content: 'Gathering data with Gemini...\n\n' });
-
-            // Phase 1: Gemini gathers data
-            let geminiMessages = convertToAnthropicMessages(processedMessages);
-            let collectedData = '';
-            let continueGathering = true;
-            let gatherIteration = 0;
-            let geminiRetryCount = 0;
-            let geminiNeedsRetry = false;
-
-            // Metadata tracking for saved HTML (blended mode)
-            const blendedUserQuestion = messages[messages.length - 1]?.content || '';
-            const blendedSqlQueries: Array<{ sql: string; result?: string }> = [];
-            const blendedIntermediateOutput: string[] = [];
-
-            while (continueGathering) {
-              // Check for cancellation before each iteration
-              if (isAborted(abortSignal)) {
-                console.log('[Chat API] Request aborted by client during Gemini data gathering');
-                send({ type: 'cancelled' });
-                controller.close();
-                if (mcpClient) await closeMcpClient(mcpClient);
-                return;
-              }
-
-              geminiNeedsRetry = false;
-              gatherIteration++;
-              llmCallCount++;
-
-              const dataGatheringSystemPrompt = getDataGatheringPrompt(metadata);
-              console.log(`\n${'─'.repeat(60)}`);
-              console.log(`[Chat API] 📤 BLENDED PHASE 1 - GEMINI LLM CALL #${llmCallCount} (iteration ${gatherIteration})`);
-              console.log(`${'─'.repeat(60)}`);
-
-              // Log system prompt (first iteration only)
-              if (gatherIteration === 1) {
-                console.log(`[Chat API] 📋 SYSTEM PROMPT (${dataGatheringSystemPrompt.length} chars):`);
-                console.log(dataGatheringSystemPrompt.slice(0, 2000) + (dataGatheringSystemPrompt.length > 2000 ? '\n... [truncated]' : ''));
-              }
-
-              // Log messages
-              console.log(`[Chat API] 💬 MESSAGES (${geminiMessages.length} total):`);
-              for (const msg of geminiMessages) {
-                const contentStr = typeof msg.content === 'string'
-                  ? msg.content
-                  : JSON.stringify(msg.content, null, 2);
-                const truncated = contentStr.length > 1000 ? contentStr.slice(0, 1000) + '\n... [truncated]' : contentStr;
-                console.log(`[Chat API]   [${msg.role}]: ${truncated}`);
-              }
-
-              const geminiLlmStartTime = Date.now();
-              console.log(`[Chat API] ⏳ Starting Gemini LLM call at ${new Date().toISOString()}`);
-
-              const geminiResponse = await anthropic.messages.create({
-                model: GEMINI_MODEL,
-                max_tokens: 8192,
-                system: dataGatheringSystemPrompt,
-                tools: dataGatheringTools,
-                messages: geminiMessages,
-                stream: true,
-              });
-
-              const assistantContentBlocks: ContentBlock[] = [];
-              let currentToolUse: { id: string; name: string; input: string } | null = null;
-              let currentTextContent = '';
-              let hasToolUse = false;
-
-              try {
-                for await (const event of geminiResponse) {
-                  if (event.type === 'content_block_start') {
-                    if (event.content_block.type === 'tool_use') {
-                      if (currentTextContent) {
-                        // Text that precedes a tool call is reasoning - stream it as normal text
-                        // (same as head-to-head mode so frontend handles it consistently)
-                        send({ type: 'text', content: currentTextContent });
-                        assistantContentBlocks.push({ type: 'text', text: currentTextContent, citations: [] });
-                        currentTextContent = '';
-                      }
-                      currentToolUse = {
-                        id: event.content_block.id,
-                        name: event.content_block.name,
-                        input: '',
-                      };
-                      hasToolUse = true;
-                    }
-                  } else if (event.type === 'content_block_delta') {
-                    if (event.delta.type === 'text_delta') {
-                      currentTextContent += event.delta.text;
-                      // Don't stream text here - only stream when we know it precedes a tool call
-                    } else if (event.delta.type === 'input_json_delta' && currentToolUse) {
-                      currentToolUse.input += event.delta.partial_json;
-                    }
-                  } else if (event.type === 'content_block_stop') {
-                    if (currentToolUse) {
-                      let parsedInput = {};
-                      try {
-                        parsedInput = JSON.parse(currentToolUse.input || '{}');
-                      } catch {
-                        parsedInput = {};
-                      }
-                      assistantContentBlocks.push({
-                        type: 'tool_use',
-                        id: currentToolUse.id,
-                        name: currentToolUse.name,
-                        input: parsedInput,
-                      });
-                      currentToolUse = null;
-                    } else if (currentTextContent) {
-                      assistantContentBlocks.push({ type: 'text', text: currentTextContent, citations: [] });
-                    }
-                  }
-                }
-              } catch (streamError) {
-                console.error('[Chat API] Blended Gemini stream error:', streamError);
-
-                // Check if this is a retryable error
-                if (isRetryableError(streamError) && geminiRetryCount < MAX_RETRIES) {
-                  geminiRetryCount++;
-                  console.log(`[Chat API] Blended Gemini retryable error, attempt ${geminiRetryCount}/${MAX_RETRIES}. Retrying...`);
-                  send({ type: 'text', content: `\n[Retrying Gemini ${geminiRetryCount}/${MAX_RETRIES}...]\n` });
-                  await sleep(RETRY_DELAY_MS * geminiRetryCount);
-                  geminiNeedsRetry = true;
-                  continue; // Retry this iteration
-                }
-
-                const errMsg = streamError instanceof Error ? streamError.message : 'Stream error';
-                send({ type: 'error', message: `Gemini error: ${errMsg}` });
-                send({ type: 'done' });
-                return; // Exit cleanly
-              }
-
-              // If we retried, skip the rest of this iteration
-              if (geminiNeedsRetry) {
-                continue;
-              }
-
-              // Log Gemini LLM response completion
-              const geminiLlmDuration = logTiming(`Gemini LLM call #${llmCallCount}`, geminiLlmStartTime);
-              const geminiResponseText = assistantContentBlocks.filter(b => b.type === 'text').map(b => (b as {text: string}).text).join('\n');
-              console.log(`[Chat API] 📥 GEMINI RESPONSE #${llmCallCount} (${geminiResponseText.length} chars, ${geminiLlmDuration}ms):`);
-              console.log(geminiResponseText.slice(0, 1000) + (geminiResponseText.length > 1000 ? '\n... [truncated]' : ''));
-
-              // Capture all text from Gemini (including text before tool calls)
-              for (const block of assistantContentBlocks) {
-                if (block.type === 'text' && block.text) {
-                  collectedData += block.text + '\n';
-                  blendedIntermediateOutput.push(block.text);
-                }
-              }
-
-              if (hasToolUse) {
-                const toolUseBlocks = assistantContentBlocks.filter(block => block.type === 'tool_use');
-                console.log(`\n[Chat API] 🔧 GEMINI TOOL CALLS: ${toolUseBlocks.length} tool(s) to execute`);
-
-                // Send tool_start events to show progress (include SQL if available)
-                for (const block of toolUseBlocks) {
-                  if (block.type === 'tool_use') {
-                    const input = block.input as Record<string, unknown>;
-                    const sql = input?.sql as string | undefined;
-                    send({ type: 'tool_start', tool: block.name, sql: sql || undefined });
-                  }
-                }
-
-                // Execute tools in parallel
-                const toolResultPromises = toolUseBlocks.map(async (block) => {
-                  if (block.type !== 'tool_use') return null;
-                  toolCallCount++;
-                  const toolStartTime = Date.now();
-                  const input = block.input as Record<string, unknown>;
-
-                  console.log(`[Chat API] 🔧 GEMINI TOOL START #${toolCallCount}: ${block.name}`);
-                  console.log(`[Chat API]    Input: ${JSON.stringify(input, null, 2).slice(0, 500)}${JSON.stringify(input).length > 500 ? '...' : ''}`);
-
-                  const validation = validateToolAccess(block.name, input);
-                  if (!validation.allowed) {
-                    logTiming(`Tool ${block.name} (denied)`, toolStartTime);
-                    console.log(`[Chat API] 🔧 GEMINI TOOL END #${toolCallCount}: ${block.name} - ACCESS DENIED`);
-                    return {
-                      type: 'tool_result' as const,
-                      tool_use_id: block.id,
-                      content: validation.message || 'Access denied',
-                      is_error: true,
-                    };
-                  }
-
-                  try {
-                    const sql = input?.sql as string | undefined;
-                    const toolResult = await executeTool(mcpClient!, block.name, input);
-                    const toolDuration = logTiming(`Tool ${block.name}`, toolStartTime);
-
-                    // Log tool result
-                    console.log(`[Chat API] 🔧 GEMINI TOOL END #${toolCallCount}: ${block.name} (${toolDuration}ms, ${toolResult.length} chars)`);
-                    console.log(`[Chat API]    Output: ${toolResult.slice(0, 500)}${toolResult.length > 500 ? '... [truncated]' : ''}`);
-
-                    // Collect tool results for passing to Opus
-                    collectedData += `\n**Tool: ${block.name}**\nInput: ${JSON.stringify(block.input)}\nResult: ${toolResult}\n`;
-                    // Track SQL queries for metadata (blended mode)
-                    if (sql && block.name === 'query') {
-                      blendedSqlQueries.push({ sql, result: toolResult });
-                    }
-                    return {
-                      type: 'tool_result' as const,
-                      tool_use_id: block.id,
-                      content: toolResult,
-                    };
-                  } catch (error) {
-                    const toolDuration = logTiming(`Tool ${block.name} (error)`, toolStartTime);
-                    console.error(`[Chat API] 🔧 GEMINI TOOL ERROR #${toolCallCount}: ${block.name} (${toolDuration}ms)`, error);
-                    return {
-                      type: 'tool_result' as const,
-                      tool_use_id: block.id,
-                      content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-                      is_error: true,
-                    };
-                  }
-                });
-
-                const toolResults = (await Promise.all(toolResultPromises)).filter((r) => r !== null) as ToolResultBlockParam[];
-
-                // Send tool_end events
-                for (const block of toolUseBlocks) {
-                  if (block.type === 'tool_use') {
-                    send({ type: 'tool_end', tool: block.name });
-                  }
-                }
-
-                geminiMessages = [
-                  ...geminiMessages,
-                  { role: 'assistant', content: assistantContentBlocks },
-                  { role: 'user', content: toolResults },
-                ];
-              } else {
-                continueGathering = false;
-              }
-            }
-
-            console.log(`\n[Chat API] ✅ BLENDED PHASE 1 COMPLETE - Data collected: ${collectedData.length} chars`);
-
-            // Check for cancellation before Opus phase
-            if (isAborted(abortSignal)) {
-              console.log('[Chat API] Request aborted by client before Opus report generation');
-              send({ type: 'cancelled' });
-              controller.close();
-              if (mcpClient) await closeMcpClient(mcpClient);
-              return;
-            }
-
-            console.log(`\n${'─'.repeat(60)}`);
-            console.log('[Chat API] 📤 BLENDED PHASE 2 - OPUS REPORT GENERATION');
-            console.log(`${'─'.repeat(60)}`);
-            send({ type: 'text', content: '\nGenerating report with Claude Opus...\n\n' });
-
-            // Phase 2: Opus generates the report
-            const userQuestion = messages[messages.length - 1]?.content || '';
-            const opusTemplate = getPrompt('user-blended-opus-input.md').replace(/^# .*\n+/, '');
-            const opusUserMessage = composePrompt(opusTemplate, {
-              'USER_QUESTION': userQuestion,
-              'COLLECTED_DATA': collectedData,
-            });
-            const opusMessages: MessageParam[] = [
-              {
-                role: 'user',
-                content: opusUserMessage,
-              },
-            ];
-
-            const reportGenSystemPrompt = getReportGenerationPrompt(isMobile);
-            console.log(`[Chat API] 📋 OPUS SYSTEM PROMPT (${reportGenSystemPrompt.length} chars):`);
-            console.log(reportGenSystemPrompt.slice(0, 2000) + (reportGenSystemPrompt.length > 2000 ? '\n... [truncated]' : ''));
-            console.log(`[Chat API] 💬 OPUS USER MESSAGE (${opusUserMessage.length} chars):`);
-            console.log(opusUserMessage.slice(0, 2000) + (opusUserMessage.length > 2000 ? '\n... [truncated]' : ''));
-
-            let opusRetryCount = 0;
-            let opusSuccess = false;
-
-            let opusFullResponse = '';
-
-            while (!opusSuccess && opusRetryCount <= MAX_RETRIES) {
-              // Check for cancellation before each Opus attempt
-              if (isAborted(abortSignal)) {
-                console.log('[Chat API] Request aborted by client during Opus generation');
-                send({ type: 'cancelled' });
-                controller.close();
-                if (mcpClient) await closeMcpClient(mcpClient);
-                return;
-              }
-
-              llmCallCount++;
-              const opusLlmStartTime = Date.now();
-              console.log(`[Chat API] ⏳ Starting Opus LLM call #${llmCallCount} at ${new Date().toISOString()}`);
-
-              try {
-                opusFullResponse = ''; // Reset on retry
-                const opusResponse = await anthropic.messages.create({
-                  model: OPUS_MODEL,
-                  max_tokens: 16384,
-                  system: reportGenSystemPrompt,
-                  messages: opusMessages,
-                  stream: true,
-                });
-
-                // Stream Opus's response to the user
-                for await (const event of opusResponse) {
-                  if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-                    opusFullResponse += event.delta.text;
-                    send({ type: 'text', content: event.delta.text });
-                  }
-                }
-
-                const opusLlmDuration = logTiming(`Opus LLM call #${llmCallCount}`, opusLlmStartTime);
-                console.log(`[Chat API] 📥 OPUS RESPONSE #${llmCallCount} (${opusFullResponse.length} chars, ${opusLlmDuration}ms)`);
-                console.log(opusFullResponse.slice(0, 1000) + (opusFullResponse.length > 1000 ? '\n... [truncated]' : ''));
-
-                opusSuccess = true;
-              } catch (opusError) {
-                console.error('[Chat API] Blended Opus stream error:', opusError);
-
-                if (isRetryableError(opusError) && opusRetryCount < MAX_RETRIES) {
-                  opusRetryCount++;
-                  console.log(`[Chat API] Blended Opus retryable error, attempt ${opusRetryCount}/${MAX_RETRIES}. Retrying...`);
-                  send({ type: 'text', content: `\n[Retrying Opus ${opusRetryCount}/${MAX_RETRIES}...]\n` });
-                  await sleep(RETRY_DELAY_MS * opusRetryCount);
-                  continue;
-                }
-
-                const errMsg = opusError instanceof Error ? opusError.message : 'Stream error';
-                send({ type: 'error', message: `Opus error: ${errMsg}` });
-                send({ type: 'done' });
-                controller.close();
-                if (mcpClient) {
-                  await closeMcpClient(mcpClient);
-                }
-                return;
-              }
-            }
-
-            // Check for HTML content and save it
-            if (containsHtml(opusFullResponse)) {
-              const htmlContent = extractHtmlContent(opusFullResponse);
-              if (htmlContent) {
-                const htmlMetadata: HtmlMetadata = {
-                  question: blendedUserQuestion,
-                  sqlQueries: blendedSqlQueries,
-                  intermediateOutput: blendedIntermediateOutput,
-                  model: 'blended (Gemini + Opus)',
-                  timestamp: new Date().toISOString(),
-                  isMobile,
-                };
-                const contentId = await saveHtmlContent(htmlContent, htmlMetadata);
-                if (contentId) {
-                  send({ type: 'content_saved', contentId });
-                  console.log('[Chat API] Blended mode: Saved HTML content with ID:', contentId);
-                }
-              }
-            }
-
-            send({ type: 'done' });
-            controller.close();
-
-            // Log blended mode completion summary
-            const totalDuration = Date.now() - requestStartTime;
-            console.log(`\n${'='.repeat(80)}`);
-            console.log(`[Chat API] ✅ BLENDED MODE REQUEST COMPLETED at ${new Date().toISOString()}`);
-            console.log(`[Chat API] 📊 Summary: ${llmCallCount} LLM calls, ${toolCallCount} tool calls`);
-            console.log(`[Chat API] ⏱️  Total duration: ${totalDuration}ms (${(totalDuration / 1000).toFixed(2)}s)`);
-            console.log(`${'='.repeat(80)}\n`);
-
-            if (mcpClient) {
-              await closeMcpClient(mcpClient);
-            }
-            return;
-          }
-
-          // ========== STANDARD MODE (non-blended) ==========
 
           // Metadata tracking for saved HTML
           const userQuestion = messages[messages.length - 1]?.content || '';
@@ -1294,7 +916,7 @@ export async function POST(request: NextRequest) {
             isFirstResponse = false;
 
             // Log the prompt being sent
-            const systemPrompt = getSystemPrompt(isMobile, metadata);
+            const systemPrompt = getSystemPrompt(isMobile, metadata, allowedDatabases);
             console.log(`\n${'─'.repeat(60)}`);
             console.log(`[Chat API] 📤 LLM CALL #${llmCallCount} (iteration ${loopIteration})`);
             console.log(`${'─'.repeat(60)}`);
@@ -1471,7 +1093,7 @@ export async function POST(request: NextRequest) {
                     };
                   } else {
                     // Validate database access before executing tool
-                    const validation = validateToolAccess(block.name, input);
+                    const validation = validateToolAccess(block.name, input, allowedDatabases);
                     if (!validation.allowed) {
                       logTiming(`Tool ${block.name} (denied)`, toolStartTime);
                       console.log(`[Chat API] 🔧 TOOL END #${toolCallCount}: ${block.name} - ACCESS DENIED: ${validation.message}`);

@@ -1,16 +1,13 @@
-# Maude - MCP Data Assistant
+# Mash - LLM MotherDuck Data Browser
 
-A conversational data analysis interface that connects to MotherDuck databases through the Model Context Protocol (MCP). Built with Next.js and deployable to Vercel.
+A conversational data analysis interface powered by Gemini that connects to MotherDuck databases through the Model Context Protocol (MCP). Built with Next.js and deployable to Vercel.
 
 ## Features
 
-### Model Modes
-
-| Mode | Description | Models Used |
-|------|-------------|-------------|
-| **Standalone** | Single model handles data gathering and report generation | Gemini Flash, Opus, or other OpenRouter models |
-| **Blended** | Two-phase approach: one model gathers data, another generates reports | Gemini Flash (data) + Claude Opus (report) |
-| **Head-to-Head** | Compare responses from multiple models side-by-side | Any combination of available models |
+### Data Analysis
+- Powered by **Gemini 3 Flash** via OpenRouter
+- Natural language queries to explore and analyze data
+- Automatic SQL generation and execution
 
 ### Data Visualization
 
@@ -46,7 +43,6 @@ A conversational data analysis interface that connects to MotherDuck databases t
 │                     API Route                                │
 │  /api/chat/route.ts                                         │
 │  - Prompt composition from markdown files                   │
-│  - Model orchestration (standalone/blended)                 │
 │  - Tool execution                                           │
 │  - HTML content storage                                     │
 └─────────────────────┬───────────────────────────────────────┘
@@ -55,56 +51,12 @@ A conversational data analysis interface that connects to MotherDuck databases t
         ▼                           ▼
 ┌───────────────────┐    ┌─────────────────────┐
 │   OpenRouter      │    │   MCP Server        │
-│   (LLM APIs)      │    │   (MotherDuck)      │
-│   - Gemini        │    │   - query           │
-│   - Claude        │    │   - list_tables     │
-│   - Others        │    │   - list_columns    │
+│   (Gemini API)    │    │   (MotherDuck)      │
+│                   │    │   - query           │
+│                   │    │   - list_tables     │
+│                   │    │   - list_columns    │
 └───────────────────┘    └─────────────────────┘
 ```
-
-## Prompt System
-
-All prompts are stored as markdown files in the `prompts/` directory for easy maintenance.
-
-### System Prompts
-
-| File | Mode | Purpose |
-|------|------|---------|
-| `standalone-system-prompt.md` | Standalone (any model) | Full instructions for data gathering AND report generation |
-| `blended-data-gathering-prompt.md` | Blended (Gemini) | Instructions for gathering data only, no HTML generation |
-| `blended-report-generation-prompt.md` | Blended (Opus) | Instructions for generating HTML reports from provided data |
-
-### Shared Components (included in system prompts)
-
-| File | Used By | Purpose |
-|------|---------|---------|
-| `database-rules.md` | All modes | Database access restrictions, data validation, compliance rules |
-| `narration-database.md` | Standalone, Blended Gemini | Instructions to narrate database operations for user visibility |
-| `narration-report.md` | Standalone, Blended Opus | Instructions to announce report generation |
-| `tufte-style-guide.md` | Standalone, Blended Opus | Edward Tufte-inspired design principles for HTML reports |
-| `html-template.md` | Standalone, Blended Opus | Base HTML/CSS template for reports |
-
-### User Message Templates
-
-| File | When Used | Purpose |
-|------|-----------|---------|
-| `user-shared-report-context.md` | Follow-up from shared report | Wraps user question with original report HTML as context |
-| `user-blended-opus-input.md` | Blended mode Phase 2 | Formats collected data for Opus to generate report |
-
-### Placeholder Tokens
-
-Prompts use `{{PLACEHOLDER}}` syntax for dynamic content:
-
-| Token | Description |
-|-------|-------------|
-| `{{DATABASE_METADATA}}` | Schema metadata from `eastlake_metadata.md` |
-| `{{MOBILE_LAYOUT_INSTRUCTIONS}}` | Mobile-specific layout instructions (when applicable) |
-| `{{ALLOWED_DATABASES}}` | List of permitted databases |
-| `{{NARRATION_DATABASE}}` | Database narration instructions |
-| `{{NARRATION_REPORT}}` | Report narration instructions |
-| `{{TUFTE_STYLE_GUIDE}}` | Tufte style guide content |
-| `{{HTML_TEMPLATE}}` | HTML template content |
-| `{{SCHEMA_EXPLORATION_STEP}}` | Dynamic instruction based on metadata availability |
 
 ## Database
 
@@ -121,14 +73,11 @@ CREATE TABLE shares (
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMP NOT NULL
 );
-
--- Migration for existing tables:
--- ALTER TABLE shares ADD COLUMN is_mobile BOOLEAN NOT NULL DEFAULT FALSE;
 ```
 
 ### MotherDuck (via MCP)
 
-Analytics database accessed through the Model Context Protocol. Currently restricted to the `eastlake` database.
+Analytics database accessed through the Model Context Protocol.
 
 ## Environment Variables
 
@@ -159,17 +108,6 @@ npm run dev
 npm run build
 ```
 
-## Deployment
-
-**Live:** https://motherduck-mcp-demo.vercel.app/
-
-The app is configured for Vercel deployment with GitHub integration. Push to `main` to deploy.
-
-```bash
-# Manual deployment
-npx vercel deploy --prod
-```
-
 ## Project Structure
 
 ```
@@ -189,10 +127,9 @@ npx vercel deploy --prod
 ├── prompts/                   # All prompt markdown files
 ├── scripts/
 │   └── init-db.ts             # Database initialization
-├── eastlake_metadata.md       # Database schema metadata
-└── tufte_style_guide.md       # Design reference
+└── eastlake_metadata.md       # Database schema metadata
 ```
 
 ## License
 
-Private - MotherDuck
+MIT

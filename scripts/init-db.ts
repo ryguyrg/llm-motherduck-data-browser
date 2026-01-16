@@ -87,6 +87,27 @@ async function initializeDatabase() {
       ALTER TABLE shares ADD COLUMN IF NOT EXISTS is_mobile BOOLEAN DEFAULT FALSE;
     `);
 
+    console.log('Creating datasets table...');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS datasets (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        url_path VARCHAR(255) NOT NULL UNIQUE,
+        motherduck_token TEXT,
+        motherduck_share_url TEXT,
+        metadata TEXT,
+        example_prompts JSONB DEFAULT '[]'::jsonb,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    console.log('Creating index on datasets url_path...');
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_datasets_url_path ON datasets(url_path);
+    `);
+
     console.log('Creating index on id column...');
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_shares_id ON shares(id);

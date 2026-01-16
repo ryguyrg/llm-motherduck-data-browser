@@ -16,13 +16,14 @@ interface McpTool {
 
 /**
  * Create an MCP client connected to MotherDuck's MCP server
+ * @param customToken - Optional custom MotherDuck token (uses env var if not provided)
  * @returns Connected MCP client
  */
-export async function createMcpClient(): Promise<Client> {
-  const token = process.env.MOTHERDUCK_TOKEN;
+export async function createMcpClient(customToken?: string): Promise<Client> {
+  const token = customToken || process.env.MOTHERDUCK_TOKEN;
 
   if (!token) {
-    throw new Error('MOTHERDUCK_TOKEN environment variable is not set');
+    throw new Error('MOTHERDUCK_TOKEN environment variable is not set and no custom token provided');
   }
 
   const transport = new StreamableHTTPClientTransport(
