@@ -47,6 +47,7 @@ export async function POST(request: NextRequest) {
       name: body.name,
       description: body.description || null,
       url_path: body.url_path,
+      database_name: body.database_name || null,
       motherduck_token: body.motherduck_token || null,
       motherduck_share_url: body.motherduck_share_url || null,
       metadata: body.metadata || null,

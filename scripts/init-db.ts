@@ -103,6 +103,11 @@ async function initializeDatabase() {
       );
     `);
 
+    console.log('Ensuring database_name column exists...');
+    await client.query(`
+      ALTER TABLE datasets ADD COLUMN IF NOT EXISTS database_name VARCHAR(255);
+    `);
+
     console.log('Creating index on datasets url_path...');
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_datasets_url_path ON datasets(url_path);

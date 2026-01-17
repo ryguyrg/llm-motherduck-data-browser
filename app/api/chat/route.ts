@@ -809,7 +809,7 @@ export async function POST(request: NextRequest) {
     const anthropic = createAnthropicClient();
 
     // Determine allowed databases from dataset
-    const allowedDatabases = dataset?.url_path ? [dataset.url_path] : DEFAULT_ALLOWED_DATABASES;
+    const allowedDatabases = dataset?.database_name ? [dataset.database_name] : DEFAULT_ALLOWED_DATABASES;
     console.log(`[Chat API] Allowed databases: ${allowedDatabases.join(', ')}`);
 
     // Create MCP client and get tools (use dataset's token if available)

@@ -5,6 +5,7 @@ export interface Dataset {
   name: string;
   description: string | null;
   url_path: string;
+  database_name: string | null;
   motherduck_token: string | null;
   motherduck_share_url: string | null;
   metadata: string | null;
@@ -50,13 +51,14 @@ export async function getDatasetById(id: number): Promise<Dataset | null> {
  */
 export async function createDataset(dataset: Omit<Dataset, 'id' | 'created_at' | 'updated_at'>): Promise<Dataset> {
   const result = await query<Dataset>(
-    `INSERT INTO datasets (name, description, url_path, motherduck_token, motherduck_share_url, metadata, example_prompts)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO datasets (name, description, url_path, database_name, motherduck_token, motherduck_share_url, metadata, example_prompts)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
       dataset.name,
       dataset.description,
       dataset.url_path,
+      dataset.database_name,
       dataset.motherduck_token,
       dataset.motherduck_share_url,
       dataset.metadata,
@@ -88,6 +90,10 @@ export async function updateDataset(
   if (updates.url_path !== undefined) {
     fields.push(`url_path = $${paramIndex++}`);
     values.push(updates.url_path);
+  }
+  if (updates.database_name !== undefined) {
+    fields.push(`database_name = $${paramIndex++}`);
+    values.push(updates.database_name);
   }
   if (updates.motherduck_token !== undefined) {
     fields.push(`motherduck_token = $${paramIndex++}`);

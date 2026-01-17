@@ -62,6 +62,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       name: body.name,
       description: body.description,
       url_path: body.url_path,
+      database_name: body.database_name,
       motherduck_token: body.motherduck_token,
       motherduck_share_url: body.motherduck_share_url,
       metadata: body.metadata,
