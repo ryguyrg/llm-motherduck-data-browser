@@ -754,10 +754,10 @@ export default function ChatInterface({ initialModel, datasetPath = 'eastlake', 
     setIsHydrated(true);
   }, []);
 
-  // Update document title when app name changes
+  // Update document title when dataset name changes
   useEffect(() => {
-    document.title = currentModelConfig.appName;
-  }, [currentModelConfig.appName]);
+    document.title = datasetName;
+  }, [datasetName]);
 
   // Handle URL params from shared report links
   useEffect(() => {
@@ -1869,9 +1869,9 @@ export default function ChatInterface({ initialModel, datasetPath = 'eastlake', 
         <div className="chat-header-left">
           <div>
             <div className="chat-title">
-              <span key={selectedModel} className="chat-title-animated">{currentModelConfig.appName}</span>
+              <span key={datasetPath} className="chat-title-animated">{datasetName}</span>
             </div>
-            <div className="chat-subtitle">Ask questions of business data in MotherDuck using a {currentModelConfig.subtitle} interface.</div>
+            <div className="chat-subtitle">Ask questions about this dataset using natural language.</div>
           </div>
         </div>
         {hasConversation && (
