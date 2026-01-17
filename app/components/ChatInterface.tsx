@@ -683,7 +683,7 @@ export default function ChatInterface({ initialModel, datasetPath = 'eastlake', 
   // Ref to hold sendMessage function for use in animateTyping
   const sendMessageRef = useRef<((text: string) => void) | null>(null);
 
-  const storageKey = 'mcp_chat_history';
+  const storageKey = datasetPath ? `mcp_chat_history_${datasetPath}` : 'mcp_chat_history';
   const [isHydrated, setIsHydrated] = useState(false);
   const [currentIsMobile, setCurrentIsMobile] = useState(false);
 
